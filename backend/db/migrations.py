@@ -50,8 +50,10 @@ def init_db() -> None:
         return
     for target, func in MIGRATIONS:
         if version < target:
-            with connection.transaction() as conn:
-                func(conn)
+            # 注意：executescript 会隐式提交，不能包在 BEGIN IMMEDIATE 里，
+            # 否则 COMMIT 时会报 "no transaction is active"。
+            # 每个迁移函数内部自行保证原子性。
+            func(connection.get_connection())
             _set_version(target)
             version = target
     _ensure_settings()
