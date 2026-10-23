@@ -255,9 +255,12 @@ def parse_int_list(raw: Any, field: str = "列表") -> list[int]:
 
 
 def clamp_page(page: Any, size: Any) -> tuple[int, int]:
-    """规范化分页参数。"""
+    """规范化分页参数：非法值一律夹逼到合法区间，而不是报错。"""
     from backend.config import MAX_PAGE_SIZE
+    from backend.core.ids import safe_int
 
-    page_no = to_int(page, "页码", min_value=1) if page not in (None, "") else 1
-    page_size = to_int(size, "每页数量", min_value=1) if size not in (None, "") else 20
-    return page_no, min(page_size, MAX_PAGE_SIZE)
+    page_no = safe_int(page, 1) if page not in (None, "") else 1
+    page_size = safe_int(size, 20) if size not in (None, "") else 20
+    page_no = max(1, page_no)
+    page_size = max(1, min(page_size, MAX_PAGE_SIZE))
+    return page_no, page_size

@@ -31,6 +31,13 @@ class Request:
     # 业务侧可挂载的临时数据（如审计上下文）
     context: dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        # 允许直接构造 Request（例如单测），此时手工补齐查询参数与头部小写化
+        if not self.query and "?" in self.raw_path:
+            self.query = parse_query(self.raw_path)
+        if self.headers:
+            self.headers = {str(k).lower(): str(v) for k, v in self.headers.items()}
+
     # -- 基础属性 ---------------------------------------------------------
 
     @property
