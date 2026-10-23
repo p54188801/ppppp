@@ -84,7 +84,7 @@ def list_notifications(
     items = notification_repo.list_for_user(
         int(viewer["id"]), only_unread=only_unread, limit=page_size, offset=offset
     )
-    total = notification_repo.unread_count(int(viewer["id"])) if only_unread else len(items)
+    total = notification_repo.count_for_user(int(viewer["id"]), only_unread=only_unread)
     return items, total
 
 

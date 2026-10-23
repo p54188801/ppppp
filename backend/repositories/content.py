@@ -179,6 +179,13 @@ class NotificationRepository(BaseRepository):
             or 0
         )
 
+    def count_for_user(self, user_id: int, only_unread: bool = False) -> int:
+        """通知总数（分页用），可只统计未读。"""
+        sql = "SELECT COUNT(*) FROM notifications WHERE user_id = ?"
+        if only_unread:
+            sql += " AND is_read = 0"
+        return int(connection.scalar(sql, (user_id,), default=0) or 0)
+
     def mark_read(self, notification_id: int, user_id: int) -> int:
         """把某条通知标为已读，返回本次真正更新的行数。"""
         connection.execute(
