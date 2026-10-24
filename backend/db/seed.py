@@ -13,6 +13,7 @@ import json
 import random
 from typing import Any
 
+from backend import config
 from backend.core import clock, ids, security
 from backend.db import connection
 from backend.db import migrations
@@ -273,9 +274,10 @@ def seed(force: bool = False) -> dict[str, Any]:
 
     # ---------------------------------------------------------------- 选课
     enroll_count = 0
-    for class_id in class_ids:
+    for index, class_id in enumerate(class_ids):
         for student_id in student_ids:
-            if random.random() < 0.65:
+            # 第一个教学班全员选课，保证演示数据里作业/成绩/签到都有足够样本
+            if index == 0 or random.random() < 0.55:
                 enroll_repo.enroll(class_id, student_id, source="import")
                 enroll_count += 1
     created["enrollments"] = enroll_count
@@ -400,14 +402,33 @@ def seed(force: bool = False) -> dict[str, Any]:
     created["attendance_records"] = att_count
 
     # ---------------------------------------------------------------- 资料
-    learn_resource = resource_repo.insert(
+    # 真实落一个文件，保证「下载」按钮可用（而不是 0 字节的死链）
+    syllabus_text = (
+        "数据结构与算法 课程大纲\n"
+        "========================\n\n"
+        "课程代码：CS101    学分：4    学时：64\n"
+        "授课教师：张伟\n\n"
+        "一、课程简介\n"
+        "本课程系统讲解线性表、栈与队列、树与二叉树、图、查找与排序等经典数据结构，\n"
+        "并结合上机实验训练算法实现与复杂度分析能力。\n\n"
+        "二、考核方式\n"
+        "作业 30% + 测验 30% + 出勤 20% + 期末 20%\n\n"
+        "三、参考教材\n"
+        "《数据结构（C 语言版）》严蔚敏\n"
+        "《算法导论》Cormen 等\n"
+    )
+    stored_name = "seed_syllabus_cs101.txt"
+    upload_target = config.UPLOAD_DIR / stored_name
+    upload_target.parent.mkdir(parents=True, exist_ok=True)
+    upload_target.write_text(syllabus_text, encoding="utf-8")
+    resource_repo.insert(
         {
             "course_id": course_ids[0],
             "title": "课程大纲",
             "description": "本学期的教学安排与考核方式",
-            "filename": "syllabus.txt",
-            "stored_name": "",
-            "size": 0,
+            "filename": "数据结构与算法-课程大纲.txt",
+            "stored_name": stored_name,
+            "size": len(syllabus_text.encode("utf-8")),
             "mime": "text/plain",
             "category": "参考资料",
             "uploader_id": teacher_ids["t1001"],

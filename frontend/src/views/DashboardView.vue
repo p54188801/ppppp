@@ -13,6 +13,7 @@ const loading = ref(true)
 const data = ref(null)
 const pending = ref([])
 const openSessions = ref([])
+const notices = ref([])
 
 const trendMax = computed(() => {
   const trend = data.value?.trend || []
@@ -26,6 +27,8 @@ async function load() {
     if (auth.isStudent) {
       pending.value = await api.get('/api/my/assignments', { status: 'pending' })
       openSessions.value = await api.get('/api/my/attendance/open')
+      const inbox = await api.get('/api/notifications', { page_size: 3 })
+      notices.value = inbox.items || []
     }
   } catch (error) {
     ui.error(error.message)
@@ -292,8 +295,29 @@ onMounted(load)
             <span>最近通知</span>
             <router-link class="small" :to="{ name: 'notifications' }">全部</router-link>
           </div>
-          <div class="empty">
-            学习进度良好，继续保持。可以去「我的课程」查看资料与讨论。
+          <div v-if="!notices.length" class="empty">暂无通知</div>
+          <div
+            v-for="item in notices"
+            :key="item.id"
+            class="row between"
+            style="padding: 8px 0; border-bottom: 1px solid var(--border); gap: 10px"
+          >
+            <div style="min-width: 0">
+              <div class="row" style="gap: 6px">
+                <span
+                  v-if="!item.is_read"
+                  class="badge blue"
+                  style="padding: 0 5px; font-size: 10px"
+                >
+                  新
+                </span>
+                <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap">
+                  {{ item.title }}
+                </span>
+              </div>
+              <div class="faint small">{{ relativeTime(item.created_at) }}</div>
+            </div>
+            <span class="badge gray">{{ item.category }}</span>
           </div>
         </div>
       </div>

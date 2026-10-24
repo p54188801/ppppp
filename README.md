@@ -80,7 +80,25 @@ cd frontend && npm run dev
 
 ---
 
-## 二、功能清单
+## 二、界面预览
+
+桌面窗口（WebView2 内核，真实运行截图）：
+
+![桌面窗口](docs/screenshots/00-window.png)
+
+| 管理员工作台 | 教学班详情 |
+|---|---|
+| ![管理员](docs/screenshots/02-admin-dashboard.png) | ![教学班](docs/screenshots/07-class-detail.png) |
+
+| 成绩册（权重可配） | 学生作业详情 |
+|---|---|
+| ![成绩册](docs/screenshots/08-gradebook.png) | ![作业](docs/screenshots/11b-assignment-detail.png) |
+
+更多截图见 `docs/screenshots/`（登录、课程、签到、成绩单、通知、用户管理等 15 张）。
+
+---
+
+## 三、功能清单
 
 ### 课程与教学班
 - 课程创建/归档，一门课可开多个教学班，每个班有独立邀请码
@@ -123,7 +141,7 @@ cd frontend && npm run dev
 
 ---
 
-## 三、代码结构
+## 四、代码结构
 
 ```
 eduflow/
@@ -170,7 +188,7 @@ HTTP 层是自研的，不依赖 Flask/FastAPI，整个后端除 pywebview 外�
 
 ---
 
-## 四、开发命令
+## 五、开发命令
 
 ```powershell
 # 建库
@@ -199,7 +217,7 @@ npm run build    # 产物输出 dist/，由后端静态托管
 
 ---
 
-## 五、接口约定
+## 六、接口约定
 
 统一响应信封：
 
@@ -229,7 +247,7 @@ npm run build    # 产物输出 dist/，由后端静态托管
 
 ---
 
-## 六、实现说明
+## 七、实现说明
 
 - **为什么自研 HTTP 层**：桌面应用只需要本机回环通信，标准库足够；少一层依赖就少一处
   打包/兼容风险（尤其在 Python 3.14 上）。
@@ -241,6 +259,6 @@ npm run build    # 产物输出 dist/，由后端静态托管
 
 ---
 
-## 七、许可证
+## 八、许可证
 
 仅用于学习与演示。演示数据中的姓名、学号、课程均为虚构。

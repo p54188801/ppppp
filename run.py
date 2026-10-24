@@ -39,6 +39,26 @@ def setup_logging(verbose: bool = False) -> None:
     )
 
 
+def enable_dpi_awareness() -> None:
+    """声明进程 DPI 感知。
+
+    不声明的话，Windows 在 125%/150% 缩放下会把窗口内 WebView2 的逻辑视口
+    放大到超出窗口物理尺寸，右侧内容被裁掉（表现为页面右侧被切）。
+    """
+    try:
+        import ctypes
+
+        # 2 = PER_MONITOR_AWARE_V2，Win8.1+
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:  # noqa: BLE001
+        try:
+            import ctypes
+
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:  # noqa: BLE001
+            logger.debug("当前系统不支持 DPI 感知设置，跳过")
+
+
 def find_free_port(host: str, start: int) -> int:
     """端口被占用时向后顺延，最多尝试 20 个。"""
     for offset in range(20):
@@ -74,6 +94,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     setup_logging(args.verbose)
+    enable_dpi_awareness()
     app = bootstrap(data_seed=not args.no_seed)
     logger.info("自检结果：%s", app.self_test())
 
@@ -111,13 +132,30 @@ def main(argv: list[str] | None = None) -> int:
 
     window = webview.create_window(
         WINDOW_TITLE,
-        url=url,
+        url=None,
+        html=(
+            "<html><body style='margin:0;background:#0d1117;color:#8b949e;"
+            "font-family:Segoe UI,sans-serif;display:grid;place-items:center;"
+            "height:100vh'><div>正在启动 EduFlow…</div></body></html>"
+        ),
         width=WINDOW_SIZE[0],
         height=WINDOW_SIZE[1],
         min_size=(1024, 700),
         background_color="#0d1117",
         text_select=True,
     )
+
+    def _load_app() -> None:
+        """等窗口真正显示后再导航。
+
+        直接在 create_window 时传 url，Windows 上偶发 WebView2 首帧不绘制
+        （窗口一片底色）；先显示一个占位页、稍后再 load_url 可以稳定规避。
+        """
+        time.sleep(0.6)
+        try:
+            window.load_url(url)
+        except Exception:  # noqa: BLE001
+            logger.exception("加载前端失败")
 
     def _watchdog() -> None:
         """窗口关闭后让主进程退出，避免残留后台服务。"""
@@ -135,8 +173,9 @@ def main(argv: list[str] | None = None) -> int:
     threading.Thread(target=_watchdog, name="window-watchdog", daemon=True).start()
 
     try:
-        # gui="edgechromium" 强制使用 WebView2，和前端构建目标一致
-        webview.start(gui="edgechromium", debug=args.debug)
+        # gui="edgechromium" 强制使用 WebView2，和前端构建目标一致；
+        # func 在 GUI 事件循环启动后于子线程执行，用来延迟加载页面
+        webview.start(_load_app, gui="edgechromium", debug=args.debug)
     finally:
         server.stop()
     return 0

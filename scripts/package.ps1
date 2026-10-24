@@ -1,4 +1,4 @@
-# 一键打包：构建前端 -> 收集后端 -> 生成可分发目录
+﻿# 一键打包：构建前端 -> 收集后端 -> 生成可分发目录
 # 用法：powershell -ExecutionPolicy Bypass -File scripts/package.ps1
 
 $ErrorActionPreference = 'Stop'
