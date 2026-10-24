@@ -98,7 +98,30 @@ cd frontend && npm run dev
 
 ---
 
-## 三、功能清单
+## 三、在 GitHub Codespaces 中运行（无需本机环境）
+
+仓库已内置 `.devcontainer`：创建 Codespace 后会自动装 Python/Node 依赖、构建前端、初始化数据库。
+
+1. 打开仓库 → **Code** → **Codespaces** → **Create codespace on main**
+2. 等待容器初始化（约 2–3 分钟，日志里会看到「环境就绪」）
+3. 在终端执行：
+
+```bash
+bash scripts/codespace_start.sh
+```
+
+4. 端口 `8765` 会自动转发并弹出浏览器；若没有，去 **PORTS** 面板点击 8765 的 🌐 图标。
+   该端口在 `devcontainer.json` 里配置为 **public**，可直接用链接访问。
+
+> 说明：Codespaces 没有图形界面，所以 `run.py`（pywebview 桌面窗口）只能在 Windows 本机用；
+> 云端用 `backend.cli serve` 起同一个后端 + 同一份前端产物，功能完全一致。
+>
+> 安全提示：端口设为 public 意味着任何拿到链接的人都能访问，演示完记得停止 Codespace，
+> 并修改默认管理员密码。
+
+---
+
+## 四、功能清单
 
 ### 课程与教学班
 - 课程创建/归档，一门课可开多个教学班，每个班有独立邀请码
@@ -141,7 +164,7 @@ cd frontend && npm run dev
 
 ---
 
-## 四、代码结构
+## 五、代码结构
 
 ```
 eduflow/
@@ -188,7 +211,7 @@ HTTP 层是自研的，不依赖 Flask/FastAPI，整个后端除 pywebview 外�
 
 ---
 
-## 五、开发命令
+## 六、开发命令
 
 ```powershell
 # 建库
@@ -217,7 +240,7 @@ npm run build    # 产物输出 dist/，由后端静态托管
 
 ---
 
-## 六、接口约定
+## 七、接口约定
 
 统一响应信封：
 
@@ -247,7 +270,7 @@ npm run build    # 产物输出 dist/，由后端静态托管
 
 ---
 
-## 七、实现说明
+## 八、实现说明
 
 - **为什么自研 HTTP 层**：桌面应用只需要本机回环通信，标准库足够；少一层依赖就少一处
   打包/兼容风险（尤其在 Python 3.14 上）。
@@ -259,6 +282,6 @@ npm run build    # 产物输出 dist/，由后端静态托管
 
 ---
 
-## 八、许可证
+## 九、许可证
 
 仅用于学习与演示。演示数据中的姓名、学号、课程均为虚构。

@@ -1,2 +1,4 @@
-﻿pywebview>=6.0
-
+# 运行时依赖
+# 桌面壳只在 Windows 上需要（pywebview 依赖 pythonnet / WebView2）。
+# 在 Linux / GitHub Codespaces 中仅运行后端 HTTP 服务，无需任何第三方依赖。
+pywebview>=6.0; sys_platform == "win32"
