@@ -7,6 +7,7 @@
     }
   },
   "postCreateCommand": "bash .devcontainer/setup.sh",
+  "postStartCommand": "nohup bash scripts/codespace_start.sh > /tmp/eduflow.log 2>&1 &",
   "forwardPorts": [8765],
   "portsAttributes": {
     "8765": {
