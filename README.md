@@ -55,6 +55,17 @@ cd ..
 
 首次启动会自动建库并写入演示数据，随后弹出桌面窗口。
 
+**用 PyCharm 运行**：用 PyCharm 打开项目目录后，右上角运行配置下拉框里已预置两个配置
+（源自 `.idea/runConfigurations/`）：
+
+| 配置 | 作用 |
+|---|---|
+| `EduFlow Desktop` | 启动桌面窗口（pywebview + WebView2），对应 `run.py` |
+| `EduFlow Web` | 只启动 HTTP 服务，对应 `backend/cli.py serve --port 8765`，用浏览器访问 |
+
+选中后按 `Shift+F10`（或点绿色 ▶）即可，解释器指向项目内的 `.venv`。
+两个配置可以同时跑：`run.py` 检测到端口被占用会自动顺延到 8766。
+
 其它启动方式：
 
 ```powershell
