@@ -14,7 +14,7 @@
 
 | 验收项 | 结果 | 证据 |
 |---|---|---|
-| 后端自写代码量 | **10,243 行**（远超 5000 要求） | `backend/` 10,243 行 + `tests/` 1,339 行 + schema 452 行 |
+| 后端自写代码量 | **10,269 行**（远超 5000 要求） | `backend/` 10,269 行 + `run.py` 195 行 + `tests/` 1,345 行 + schema 452 行 |
 | 前端 Vue3 | 8,123 行，17 个页面 | `frontend/src/` |
 | 单元测试 | **36 项通过** | `python -m unittest tests.test_core` |
 | 端到端测试 | **39 项通过** | `python tests/smoke_test.py` |

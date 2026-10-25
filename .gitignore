@@ -22,6 +22,9 @@ build/
 dist/
 *.spec
 
+# 全量源码汇编（按需生成，不提交）
+docs/ALL_CODE.md
+
 # 编辑器 / 系统
 .idea/
 .vscode/

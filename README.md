@@ -107,6 +107,9 @@ cd frontend && npm run dev
 
 更多截图见 `docs/screenshots/`（登录、课程、章节任务点、签到、成绩单、通知、用户管理等 28 张）。
 
+> 课程设计要求逐项对照（提交记录、Vue3/WebView、纯代码行数、PyCharm 展示）见
+> [docs/验收对照.md](docs/验收对照.md)。
+
 ---
 
 
@@ -124,6 +127,19 @@ cd D:\EduFlow
 ```
 
 该文件由 `tools/build_single_file.py` 自动生成，详见 `单文件版说明.md`。
+
+### 在 PyCharm 中展示全部代码
+
+- **项目视图**：用 PyCharm 打开 `D:\EduFlow`，左侧 Project 面板即可浏览 `backend/`、`frontend/src/`、`tests/`
+- **一键生成全量源码**：
+
+```powershell
+.\.venv\Scripts\python.exe tools\export_all_code.py
+```
+
+生成 `docs/ALL_CODE.md`（约 110 个源码文件、2.1 万行），PyCharm 双击打开即可从头到尾展示；
+也可以右键 `tools/export_all_code.py` → **Run**。详细步骤见 [docs/验收对照.md](docs/验收对照.md)。
+
 ## 四、在 GitHub Codespaces 中运行（无需本机环境）
 
 仓库已内置 `.devcontainer`：创建 Codespace 后会自动装 Python/Node 依赖、构建前端、初始化数据库。
