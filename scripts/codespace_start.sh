@@ -6,9 +6,16 @@ cd "$(dirname "$0")/.."
 HOST="${EDUFLOW_HOST:-0.0.0.0}"
 PORT="${EDUFLOW_PORT:-8765}"
 
-if [ ! -f "frontend/dist/index.html" ]; then
-  echo "==> 未找到前端产物，开始构建"
-  (cd frontend && npm install --no-audit --no-fund && npm run build)
+if [ ! -d "frontend/node_modules" ]; then
+  echo "==> 未找到前端依赖，开始安装"
+  (cd frontend && npm install --no-audit --no-fund)
+fi
+
+# 默认每次启动都重新构建，保证 git pull 后的新前端能生效；
+# 想跳过可设 EDUFLOW_REBUILD=0
+if [ ! -f "frontend/dist/index.html" ] || [ "${EDUFLOW_REBUILD:-1}" = "1" ]; then
+  echo "==> 构建前端"
+  (cd frontend && npm run build)
 fi
 
 echo "==> 启动 EduFlow：http://${HOST}:${PORT}"
