@@ -59,8 +59,8 @@ def cmd_reset(args) -> int:
 def cmd_serve(args) -> int:
     config.ensure_dirs()
     migrations.init_db()
-    if not is_seeded():
-        seed()
+    # seed() 幂等：已有演示数据时只补齐后来新增的演示内容（如章节任务点）
+    seed()
     app = Application()
     server = HttpServer(app.dispatch, host=args.host, port=args.port).start()
     server.wait_ready()

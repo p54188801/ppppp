@@ -192,6 +192,48 @@ def main() -> int:
         data = student.post("/api/classes/join", {"code": state["join_code"]})
         assert data["ok"]
 
+    def t_create_chapter():
+        data = teacher.post(
+            f"/api/courses/{state['course_id']}/chapters",
+            {"title": "第 1 章 冒烟测试", "description": "章节任务点冒烟"},
+            expect=201,
+        )
+        state["chapter_id"] = data["data"]["id"]
+
+    def t_create_chapter_task():
+        data = teacher.post(
+            f"/api/chapters/{state['chapter_id']}/tasks",
+            {
+                "type": "text",
+                "title": "阅读课程导学",
+                "description": "了解课程安排",
+                "duration": 10,
+                "required": True,
+            },
+            expect=201,
+        )
+        state["task_id"] = data["data"]["id"]
+        assert data["data"]["type"] == "text"
+
+    def t_student_chapters():
+        data = student.get(f"/api/courses/{state['course_id']}/chapters")
+        chapter = next(item for item in data["data"]["items"] if item["id"] == state["chapter_id"])
+        assert chapter["task_count"] == 1
+        assert chapter["tasks"][0]["my_progress"] is None
+
+    def t_report_progress():
+        data = student.post(
+            f"/api/tasks/{state['task_id']}/progress", {"progress": 100}
+        )
+        assert data["data"]["status"] == "completed"
+        assert data["data"]["progress"] == 100
+        assert data["data"]["finished_at"]
+
+    def t_teacher_progress():
+        data = teacher.get(f"/api/courses/{state['course_id']}/progress")
+        rows = data["data"]["students"]
+        assert rows and rows[0]["completed_count"] >= 1, rows
+
     def t_create_assignment():
         data = teacher.post(
             "/api/assignments",
@@ -387,6 +429,11 @@ def main() -> int:
         ("创建课程", t_create_course),
         ("课程详情含教学班", t_course_classes),
         ("学生加入教学班", t_join_class),
+        ("创建章节", t_create_chapter),
+        ("创建任务点", t_create_chapter_task),
+        ("学生看章节任务点", t_student_chapters),
+        ("学生上报进度", t_report_progress),
+        ("教师看学习进度", t_teacher_progress),
         ("发布作业", t_create_assignment),
         ("学生作业列表", t_student_assignments),
         ("提交作业", t_submit_assignment),

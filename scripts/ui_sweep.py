@@ -14,7 +14,7 @@ ROUTES = {
               "/#/notifications", "/#/profile", "/#/attendance"],
     "t1001": ["/#/", "/#/courses", "/#/courses/1", "/#/classes/1", "/#/classes/1/gradebook",
               "/#/attendance", "/#/search?q=%E6%95%B0%E6%8D%AE", "/#/profile"],
-    "s2001": ["/#/", "/#/courses", "/#/my/assignments", "/#/assignments/1", "/#/grades",
+    "s2001": ["/#/", "/#/courses", "/#/courses/1", "/#/my/assignments", "/#/assignments/1", "/#/grades",
               "/#/attendance", "/#/notifications", "/#/search?q=%E6%95%B0%E6%8D%AE", "/#/profile"],
 }
 
@@ -54,7 +54,14 @@ with sync_playwright() as pw:
         if user == "t1001":
             page.goto(f"{BASE}/#/courses/1", wait_until="networkidle")
             page.wait_for_timeout(900)
+            page.screenshot(path=f"{OUT}/21-chapters.png")
+            page.locator(".tab", has_text="公告").click()
+            page.wait_for_timeout(500)
             page.screenshot(path=f"{OUT}/20-announcements.png")
+        if user == "s2001":
+            page.goto(f"{BASE}/#/courses/1", wait_until="networkidle")
+            page.wait_for_timeout(900)
+            page.screenshot(path=f"{OUT}/22-student-chapters.png")
         ctx.close()
     browser.close()
 

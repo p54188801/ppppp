@@ -1,7 +1,7 @@
 # EduFlow 教务系统
 
-面向高校场景的**桌面端教务与教学管理平台**，功能对标"学习通"：课程与教学班、作业发布与批改、
-在线测验与自动判分、课堂签到（码/位置/迟到判定）、资料共享、讨论区、成绩加权与绩点、教学统计。
+面向高校场景的**桌面端教务与教学管理平台**，功能对标"学习通"：课程与教学班、章节任务点与学习进度、
+作业发布与批改、在线测验与自动判分、课堂签到（码/位置/迟到判定）、资料共享、讨论区、成绩加权与绩点、教学统计。
 
 技术形态：**Python 后端 + Vue3 前端 + WebView2 桌面壳**，全部数据存本地 SQLite，离线可用、无需联网。
 
@@ -105,7 +105,7 @@ cd frontend && npm run dev
 |---|---|
 | ![成绩册](docs/screenshots/08-gradebook.png) | ![作业](docs/screenshots/11b-assignment-detail.png) |
 
-更多截图见 `docs/screenshots/`（登录、课程、签到、成绩单、通知、用户管理等 15 张）。
+更多截图见 `docs/screenshots/`（登录、课程、章节任务点、签到、成绩单、通知、用户管理等 28 张）。
 
 ---
 
@@ -114,7 +114,7 @@ cd frontend && npm run dev
 
 ## 三、单文件版（提交/演示用）
 
-eduflow_all.py 是把整个后端合并成的**单个文件**（9,300 行，571 个函数，43 个类，零第三方依赖），
+eduflow_all.py 是把整个后端合并成的**单个文件**（11,484 行，672 个函数，47 个类，零第三方依赖），
 功能和多文件版完全一致，适合单文件提交或答辩演示：
 
 ```powershell
@@ -153,6 +153,13 @@ bash scripts/codespace_start.sh
 - 课程创建/归档，一门课可开多个教学班，每个班有独立邀请码
 - 学生凭邀请码加入，教师可手动添加/移出，容量限制
 - 课程资料上传（multipart）、下载、分类、下载量统计
+
+### 章节任务点与学习进度
+- 课程按章节组织，章节下可放资料、作业、测验、讨论或纯图文任务点
+- 任务点可关联已有资料/作业/测验，避免重复维护内容
+- 学生逐个「开始学习 / 标记完成」，进度条实时更新；进行中的任务按百分比计入
+- 教师查看整门课的章节完成率、每名学生已完成任务数与最近学习时间
+- 学生首页显示各门课程的学习进度；演示数据自带 3 章 7 个任务点
 
 ### 作业
 - 发布作业：正文、附件、满分、截止时间、是否允许迟交、迟交扣分比例
@@ -206,7 +213,7 @@ eduflow/
 │   │   ├── security.py        PBKDF2 口令、HMAC 签名
 │   │   └── validators.py      入参校验与类型转换
 │   ├── db/
-│   │   ├── schema.sql         22 张表的完整结构
+│   │   ├── schema.sql         26 张表的完整结构（schema v4）
 │   │   ├── connection.py      线程内连接、WAL、事务
 │   │   ├── migrations.py      版本迁移框架
 │   │   └── seed.py            演示数据
@@ -216,18 +223,19 @@ eduflow/
 │   │   ├── request.py / response.py
 │   │   ├── multipart.py       multipart/form-data 解析
 │   │   └── static.py          SPA 静态资源与目录穿越防护
-│   ├── repositories/          数据访问（10 个仓储）
-│   ├── services/              业务逻辑（11 个服务）
-│   └── api/                   91 个 REST 接口
+│   ├── repositories/          数据访问（9 个模块 / 22 个仓储类）
+│   ├── services/              业务逻辑（16 个服务模块）
+│   └── api/                   116 个 REST 接口
 ├── frontend/
 │   ├── src/
 │   │   ├── api/client.js      请求封装与格式化工具
 │   │   ├── stores/            Pinia：auth / ui
 │   │   ├── router/            hash 路由 + 登录与角色守卫
 │   │   ├── styles/main.css    设计系统（深色主题）
-│   │   └── views/             13 个页面
+│   │   └── views/             17 个页面
 │   └── vite.config.js
-├── tests/smoke_test.py        34 项端到端冒烟测试
+├── tests/smoke_test.py        39 项端到端冒烟测试
+├── tests/test_chapters.py     30 项章节任务点测试
 ├── run.py                     桌面入口（pywebview）
 └── requirements.txt
 ```
@@ -254,6 +262,11 @@ python -m backend.cli info
 
 # 端到端测试（使用临时数据库，不影响开发数据）
 python tests/smoke_test.py
+
+# 起服务后跑接口级测试
+python tests/test_chapters.py 8905
+python tests/test_new_features.py 8905
+python tests/test_edge_cases.py 8905
 ```
 
 前端：
@@ -285,6 +298,9 @@ npm run build    # 产物输出 dist/，由后端静态托管
 | POST | `/api/auth/login` | 登录 |
 | GET | `/api/dashboard` | 按角色返回看板 |
 | GET | `/api/courses` | 课程列表 |
+| GET | `/api/courses/{id}/chapters` | 章节任务点与我的进度 |
+| POST | `/api/tasks/{id}/progress` | 上报任务点进度 |
+| GET | `/api/courses/{id}/progress` | 教师查看学习完成率 |
 | POST | `/api/assignments` | 发布作业 |
 | POST | `/api/assignments/{id}/submit` | 提交作业 |
 | POST | `/api/submissions/{id}/grade` | 批改 |

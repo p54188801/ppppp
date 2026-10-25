@@ -41,6 +41,7 @@ MODULES: list[tuple[str, str]] = [
     ("content_repo", "backend/repositories/content.py"),
     ("grades_repo", "backend/repositories/grades.py"),
     ("audit_repo", "backend/repositories/audit.py"),
+    ("chapters_repo", "backend/repositories/chapters.py"),
     ("search_service", "backend/services/search_service.py"),
     ("auth_service", "backend/services/auth_service.py"),
     ("notification_service", "backend/services/notification_service.py"),
@@ -54,6 +55,7 @@ MODULES: list[tuple[str, str]] = [
     ("grade_service", "backend/services/grade_service.py"),
     ("resource_service", "backend/services/resource_service.py"),
     ("discussion_service", "backend/services/discussion_service.py"),
+    ("chapter_service", "backend/services/chapter_service.py"),
     ("statistics_service", "backend/services/statistics_service.py"),
     ("request_lib", "backend/http/request.py"),
     ("router_lib", "backend/http/router.py"),
@@ -63,6 +65,7 @@ MODULES: list[tuple[str, str]] = [
     ("auth_api", "backend/api/auth_routes.py"),
     ("user_api", "backend/api/user_routes.py"),
     ("course_api", "backend/api/course_routes.py"),
+    ("chapter_api", "backend/api/chapter_routes.py"),
     ("assignment_api", "backend/api/assignment_routes.py"),
     ("quiz_api", "backend/api/quiz_routes.py"),
     ("attendance_api", "backend/api/attendance_routes.py"),
@@ -212,7 +215,7 @@ HEADER = '''#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """EduFlow 教务系统 —— 单文件版。
 
-整个后端（配置、核心工具、数据访问、业务服务、HTTP 层、91 个接口、演示数据）
+整个后端（配置、核心工具、数据访问、业务服务、HTTP 层、全部接口、演示数据）
 全部合并在本文件中，不依赖任何第三方库（桌面窗口 pywebview 仅在 --web 模式需要）。
 
 用法::
@@ -279,7 +282,7 @@ class Application:
         self.router = router_lib.Router()
         self.static = static_lib.StaticFiles(config.FRONTEND_DIST, spa_fallback=True)
         for module in (
-            auth_api, user_api, course_api, assignment_api, quiz_api,
+            auth_api, user_api, course_api, chapter_api, assignment_api, quiz_api,
             attendance_api, grade_api, content_api, report_api, system_api,
         ):
             self.router.include(module.router)
@@ -436,8 +439,7 @@ def cmd_info() -> int:
 def cmd_serve(host: str, port: int, open_browser: bool = False) -> int:
     config.ensure_dirs()
     migrations.init_db()
-    if not seed_lib.is_seeded():
-        seed_lib.seed()
+    seed_lib.seed()
     actual = find_free_port(host, port)
     server = server_lib.HttpServer(application.dispatch, host=host, port=actual).start()
     server.wait_ready()
@@ -459,8 +461,7 @@ def cmd_serve(host: str, port: int, open_browser: bool = False) -> int:
 def cmd_window(port: int, debug: bool = False) -> int:
     config.ensure_dirs()
     migrations.init_db()
-    if not seed_lib.is_seeded():
-        seed_lib.seed()
+    seed_lib.seed()
     enable_dpi_awareness()
     actual = find_free_port("127.0.0.1", port)
     server = server_lib.HttpServer(application.dispatch, host="127.0.0.1", port=actual).start()

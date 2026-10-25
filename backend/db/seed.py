@@ -19,6 +19,12 @@ from backend.db import connection
 from backend.db import migrations
 from backend.repositories.assignments import AssignmentRepository, SubmissionRepository
 from backend.repositories.attendance import AttendanceRecordRepository, AttendanceSessionRepository
+from backend.repositories.audit import SettingRepository
+from backend.repositories.chapters import (
+    ChapterRepository,
+    TaskProgressRepository,
+    TaskRepository,
+)
 from backend.repositories.content import (
     DiscussionRepository,
     NotificationRepository,
@@ -47,6 +53,10 @@ reply_repo = ReplyRepository()
 notification_repo = NotificationRepository()
 rule_repo = GradeRuleRepository()
 item_repo = GradeItemRepository()
+chapter_repo = ChapterRepository()
+task_repo = TaskRepository()
+progress_repo = TaskProgressRepository()
+setting_repo = SettingRepository()
 
 DEFAULT_PASSWORD = "Eduflow@2026"
 
@@ -158,10 +168,172 @@ def is_seeded() -> bool:
     return user_repo.by_username("admin") is not None
 
 
+# ---------------------------------------------------------------------------
+# 章节任务点与学习进度（对已有演示库同样可补，幂等）
+# ---------------------------------------------------------------------------
+
+
+def _add_chapter(course_id: int, title: str, description: str,
+                 order_no: int) -> int:
+    return chapter_repo.insert(
+        {
+            "course_id": course_id,
+            "title": title,
+            "description": description,
+            "order_no": order_no,
+        }
+    )
+
+
+def _add_task(chapter_id: int, task_type: str, title: str, *,
+              description: str = "", duration: int = 30, required: int = 1,
+              resource_id: int | None = None, quiz_id: int | None = None,
+              assignment_id: int | None = None) -> int:
+    return task_repo.insert(
+        {
+            "chapter_id": chapter_id,
+            "type": task_type,
+            "title": title,
+            "description": description,
+            "duration": duration,
+            "required": required,
+            "resource_id": resource_id,
+            "quiz_id": quiz_id,
+            "assignment_id": assignment_id,
+            "order_no": task_repo.next_order_no(chapter_id),
+        }
+    )
+
+
+def ensure_chapters() -> dict[str, Any]:
+    """给 CS101 建一套演示章节；已有章节或已初始化过时直接跳过。"""
+    if setting_repo.get("chapters_seeded") == "1":
+        return {"skipped": True, "reason": "章节演示数据已初始化"}
+    if chapter_repo.count() > 0:
+        setting_repo.set("chapters_seeded", "1")
+        return {"skipped": True, "reason": "已存在章节数据"}
+
+    course = course_repo.find_by(code="CS101")
+    teacher = user_repo.by_username("t1001")
+    if not course or not teacher:
+        return {"skipped": True, "reason": "缺少 CS101 演示课程或教师"}
+
+    course_id = int(course["id"])
+    teacher_id = int(teacher["id"])
+    classes = class_repo.of_course(course_id)
+    if not classes:
+        return {"skipped": True, "reason": "CS101 还没有教学班"}
+
+    class_id = int(classes[0]["id"])
+    resource = resource_repo.find_by(course_id=course_id, title="课程大纲")
+    quiz = quiz_repo.find_by(class_id=class_id)
+    discussion = discussion_repo.find_by(course_id=course_id)
+    assignments = sorted(
+        assignment_repo.list_by_class(class_id, limit=10), key=lambda row: int(row["id"])
+    )
+
+    chapter_one = _add_chapter(
+        course_id, "第 1 章 绪论与算法分析", "课程导学、算法复杂度与学习要求。", 1
+    )
+    task_ids: dict[str, int] = {}
+    task_ids["syllabus"] = _add_task(
+        chapter_one, "material", "阅读《课程大纲》",
+        description="了解考核方式、教材与实验安排。", duration=20,
+        resource_id=int(resource["id"]) if resource else None,
+    )
+    task_ids["guide"] = _add_task(
+        chapter_one, "text", "课程导学：如何学好数据结构",
+        description="先修知识、学习路线与常见误区。", duration=15,
+    )
+
+    chapter_two = _add_chapter(
+        course_id, "第 2 章 线性表", "顺序表、链表与相关操作的复杂度分析。", 2
+    )
+    task_ids["linear"] = _add_task(
+        chapter_two, "text", "线性表重点梳理",
+        description="顺序表与链表的插入、删除、查找对比。", duration=40,
+    )
+    if quiz:
+        task_ids["quiz"] = _add_task(
+            chapter_two, "quiz", "第一章随堂测验",
+            description="限时 30 分钟，检验线性表掌握情况。", duration=30,
+            quiz_id=int(quiz["id"]),
+        )
+    if discussion:
+        task_ids["discussion"] = _add_task(
+            chapter_two, "discussion", "参与讨论：复杂度疑问",
+            description="在讨论区提出或回答一个复杂度相关的问题。", duration=10,
+        )
+
+    chapter_three = _add_chapter(
+        course_id, "第 3 章 树与二叉树", "二叉树遍历、递归与典型应用。", 3
+    )
+    for index, assignment in enumerate(assignments[:2]):
+        task_ids[f"assignment_{index}"] = _add_task(
+            chapter_three,
+            "assignment",
+            assignment["title"],
+            description="按作业要求提交源码与实验报告。",
+            duration=90,
+            assignment_id=int(assignment["id"]),
+        )
+
+    # 给前几位学生造一些学习痕迹，让进度条不是空的
+    students = chapter_repo.students_of_course(course_id)
+    now = clock.utcnow()
+    plan = [
+        (0, "syllabus", "completed", 100, 9),
+        (0, "guide", "completed", 100, 9),
+        (0, "linear", "completed", 100, 7),
+        (0, "quiz", "in_progress", 40, 2),
+        (0, "discussion", "completed", 100, 6),
+        (1, "syllabus", "completed", 100, 8),
+        (1, "guide", "completed", 100, 8),
+        (1, "linear", "in_progress", 60, 3),
+        (2, "syllabus", "completed", 100, 10),
+        (2, "guide", "completed", 100, 10),
+        (2, "linear", "completed", 100, 9),
+        (2, "quiz", "completed", 100, 5),
+        (2, "discussion", "completed", 100, 8),
+        (3, "syllabus", "completed", 100, 6),
+        (4, "syllabus", "completed", 100, 4),
+        (4, "guide", "completed", 100, 4),
+    ]
+    progress_count = 0
+    for student_index, key, status, progress, days_ago in plan:
+        if student_index >= len(students) or key not in task_ids:
+            continue
+        student_id = int(students[student_index]["student_id"])
+        started = clock.to_iso(clock.add_days(now, -days_ago))
+        progress_repo.insert(
+            {
+                "task_id": task_ids[key],
+                "student_id": student_id,
+                "status": status,
+                "progress": progress,
+                "started_at": started,
+                "finished_at": started if status == "completed" else None,
+            }
+        )
+        progress_count += 1
+
+    setting_repo.set("chapters_seeded", "1")
+    return {
+        "skipped": False,
+        "chapters": 3,
+        "tasks": len(task_ids),
+        "progress": progress_count,
+    }
+
+
 def seed(force: bool = False) -> dict[str, Any]:
     migrations.init_db()
     if is_seeded() and not force:
-        return {"skipped": True, "reason": "已存在演示数据"}
+        return {
+            "skipped": True,
+            "reason": "已存在演示数据",
+            "chapters": ensure_chapters(),
+        }
 
     if force:
         migrations.reset_db()
@@ -490,6 +662,11 @@ def seed(force: bool = False) -> dict[str, Any]:
         )
     created["notifications"] = 6
 
+    chapter_stats = ensure_chapters()
+    created["chapters"] = chapter_stats.get("chapters", 0)
+    created["tasks"] = chapter_stats.get("tasks", 0)
+    created["task_progress"] = chapter_stats.get("progress", 0)
+
     connection.get_connection().execute("PRAGMA wal_checkpoint(TRUNCATE)")
     return {"skipped": False, "created": created, "password": DEFAULT_PASSWORD}
 
@@ -503,4 +680,7 @@ def summary() -> dict[str, int]:
         "submissions": int(connection.scalar("SELECT COUNT(*) FROM submissions", default=0) or 0),
         "quizzes": int(connection.scalar("SELECT COUNT(*) FROM quizzes", default=0) or 0),
         "attendance": int(connection.scalar("SELECT COUNT(*) FROM attendance_records", default=0) or 0),
+        "chapters": int(connection.scalar("SELECT COUNT(*) FROM chapters", default=0) or 0),
+        "tasks": int(connection.scalar("SELECT COUNT(*) FROM tasks", default=0) or 0),
+        "task_progress": int(connection.scalar("SELECT COUNT(*) FROM task_progress", default=0) or 0),
     }

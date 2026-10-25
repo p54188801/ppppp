@@ -21,7 +21,7 @@ from pathlib import Path
 from backend import config
 from backend.app import Application
 from backend.db import migrations
-from backend.db.seed import is_seeded, seed
+from backend.db.seed import seed
 from backend.http.server import HttpServer
 
 logger = logging.getLogger("eduflow.run")
@@ -76,10 +76,10 @@ def find_free_port(host: str, start: int) -> int:
 def bootstrap(data_seed: bool = True) -> Application:
     config.ensure_dirs()
     migrations.init_db()
-    if data_seed and not is_seeded():
-        logger.info("正在写入演示数据……")
-        result = seed()
-        logger.info("演示数据写入完成：%s", result.get("created"))
+    if data_seed:
+        logger.info("正在检查/写入演示数据……")
+        result = seed()  # 幂等，会补齐新增的演示内容
+        logger.info("演示数据就绪：%s", result.get("created") or result.get("chapters"))
     return Application()
 
 

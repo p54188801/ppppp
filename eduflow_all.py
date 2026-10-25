@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """EduFlow 教务系统 —— 单文件版。
 
-整个后端（配置、核心工具、数据访问、业务服务、HTTP 层、91 个接口、演示数据）
+整个后端（配置、核心工具、数据访问、业务服务、HTTP 层、全部接口、演示数据）
 全部合并在本文件中，不依赖任何第三方库（桌面窗口 pywebview 仅在 --web 模式需要）。
 
 用法::
@@ -453,7 +453,59 @@ CREATE TABLE IF NOT EXISTS assignment_files (
 );
 
 CREATE INDEX IF NOT EXISTS idx_assignment_files_owner
-    ON assignment_files(assignment_id, student_id);"""
+    ON assignment_files(assignment_id, student_id);
+
+-- ---------------------------------------------------------------------
+-- 章节任务点与学习进度
+-- ---------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS chapters (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    course_id   INTEGER NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+    title       TEXT    NOT NULL,
+    description TEXT    NOT NULL DEFAULT '',
+    order_no    INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT    NOT NULL,
+    updated_at  TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_chapters_course ON chapters(course_id, order_no);
+
+CREATE TABLE IF NOT EXISTS tasks (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    chapter_id    INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+    type          TEXT    NOT NULL DEFAULT 'material'
+                  CHECK (type IN ('material', 'assignment', 'quiz', 'discussion', 'text')),
+    title         TEXT    NOT NULL,
+    description   TEXT    NOT NULL DEFAULT '',
+    duration      INTEGER NOT NULL DEFAULT 0,   -- 预计学习时长（分钟）
+    required      INTEGER NOT NULL DEFAULT 1,   -- 是否必修任务点
+    resource_id   INTEGER REFERENCES resources(id) ON DELETE SET NULL,
+    quiz_id       INTEGER REFERENCES quizzes(id) ON DELETE SET NULL,
+    assignment_id INTEGER REFERENCES assignments(id) ON DELETE SET NULL,
+    order_no      INTEGER NOT NULL DEFAULT 0,
+    created_at    TEXT    NOT NULL,
+    updated_at    TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_chapter ON tasks(chapter_id, order_no);
+
+CREATE TABLE IF NOT EXISTS task_progress (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id     INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    student_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    status      TEXT    NOT NULL DEFAULT 'in_progress'
+                CHECK (status IN ('in_progress', 'completed')),
+    progress    INTEGER NOT NULL DEFAULT 0 CHECK (progress BETWEEN 0 AND 100),
+    started_at  TEXT,
+    finished_at TEXT,
+    created_at  TEXT    NOT NULL,
+    updated_at  TEXT    NOT NULL,
+    UNIQUE (task_id, student_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_progress_student ON task_progress(student_id);
+CREATE INDEX IF NOT EXISTS idx_task_progress_task    ON task_progress(task_id, status);"""
 
 
 # ======================================================================
@@ -2067,7 +2119,7 @@ def _mod_migrations(clock, config, connection):
 
 
     SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
-    CURRENT_VERSION = 3
+    CURRENT_VERSION = 4
 
 
     def _read_schema() -> str:
@@ -2126,10 +2178,63 @@ def _mod_migrations(clock, config, connection):
         )
 
 
+    def _migrate_v4(conn: sqlite3.Connection) -> None:
+        """v3 -> v4：新增章节、任务点与学习进度表（幂等）。"""
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS chapters (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                course_id   INTEGER NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+                title       TEXT    NOT NULL,
+                description TEXT    NOT NULL DEFAULT '',
+                order_no    INTEGER NOT NULL DEFAULT 0,
+                created_at  TEXT    NOT NULL,
+                updated_at  TEXT    NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_chapters_course ON chapters(course_id, order_no);
+
+            CREATE TABLE IF NOT EXISTS tasks (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                chapter_id    INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+                type          TEXT    NOT NULL DEFAULT 'material'
+                              CHECK (type IN ('material', 'assignment', 'quiz', 'discussion', 'text')),
+                title         TEXT    NOT NULL,
+                description   TEXT    NOT NULL DEFAULT '',
+                duration      INTEGER NOT NULL DEFAULT 0,
+                required      INTEGER NOT NULL DEFAULT 1,
+                resource_id   INTEGER REFERENCES resources(id) ON DELETE SET NULL,
+                quiz_id       INTEGER REFERENCES quizzes(id) ON DELETE SET NULL,
+                assignment_id INTEGER REFERENCES assignments(id) ON DELETE SET NULL,
+                order_no      INTEGER NOT NULL DEFAULT 0,
+                created_at    TEXT    NOT NULL,
+                updated_at    TEXT    NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_tasks_chapter ON tasks(chapter_id, order_no);
+
+            CREATE TABLE IF NOT EXISTS task_progress (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id     INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+                student_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                status      TEXT    NOT NULL DEFAULT 'in_progress'
+                            CHECK (status IN ('in_progress', 'completed')),
+                progress    INTEGER NOT NULL DEFAULT 0 CHECK (progress BETWEEN 0 AND 100),
+                started_at  TEXT,
+                finished_at TEXT,
+                created_at  TEXT    NOT NULL,
+                updated_at  TEXT    NOT NULL,
+                UNIQUE (task_id, student_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_task_progress_student ON task_progress(student_id);
+            CREATE INDEX IF NOT EXISTS idx_task_progress_task    ON task_progress(task_id, status);
+            """
+        )
+
+
     MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
         (1, _migrate_v1),
         (2, _migrate_v2),
         (3, _migrate_v3),
+        (4, _migrate_v4),
     ]
 
 
@@ -2192,6 +2297,9 @@ def _mod_migrations(clock, config, connection):
             "discussions",
             "announcements",
             "assignment_files",
+            "task_progress",
+            "tasks",
+            "chapters",
             "notifications",
             "grade_items",
             "grade_rules",
@@ -4046,6 +4154,187 @@ def _mod_audit_repo(BaseRepository, connection):
     return SimpleNamespace(
         AuditRepository=AuditRepository,
         SettingRepository=SettingRepository,
+    )
+
+
+# ======================================================================
+# 模块：backend/repositories/chapters.py
+# ======================================================================
+def _mod_chapters_repo(BaseRepository, connection):
+    """章节、任务点与学习进度的数据访问层。
+
+    章节属于课程（不是教学班），一个课程下的所有教学班共用同一套章节；
+    任务点通过可选的 resource_id / quiz_id / assignment_id 关联到具体内容，
+    学生每完成一个任务点就在 task_progress 里留一条记录。
+    """
+
+
+    from typing import Any
+
+
+
+    class ChapterRepository(BaseRepository):
+        table = "chapters"
+        writable = ("course_id", "title", "description", "order_no")
+
+        BASE_SELECT = """
+            SELECT ch.*, c.name AS course_name, c.teacher_id,
+                   (SELECT COUNT(*) FROM tasks t WHERE t.chapter_id = ch.id) AS task_count
+              FROM chapters ch
+              JOIN courses c ON c.id = ch.course_id
+        """
+
+        def list_by_course(self, course_id: int) -> list[dict[str, Any]]:
+            return connection.query_all(
+                self.BASE_SELECT
+                + " WHERE ch.course_id = ? ORDER BY ch.order_no, ch.id",
+                (course_id,),
+            )
+
+        def detail(self, chapter_id: int) -> dict[str, Any] | None:
+            return connection.query_one(
+                self.BASE_SELECT + " WHERE ch.id = ?", (chapter_id,)
+            )
+
+        def next_order_no(self, course_id: int) -> int:
+            value = connection.scalar(
+                "SELECT MAX(order_no) FROM chapters WHERE course_id = ?",
+                (course_id,),
+                default=0,
+            )
+            return int(value or 0) + 1
+
+        def students_of_course(self, course_id: int) -> list[dict[str, Any]]:
+            """课程下所有教学班的学生（按学号排序，同一个学生只出现一次）。"""
+            return connection.query_all(
+                """SELECT u.id AS student_id, u.real_name, u.number, u.department,
+                          MIN(cl.id) AS class_id, MIN(cl.name) AS class_name
+                     FROM enrollments e
+                     JOIN classes cl ON cl.id = e.class_id
+                     JOIN users u ON u.id = e.student_id
+                    WHERE cl.course_id = ? AND e.status = 'active'
+                    GROUP BY u.id
+                    ORDER BY u.number, u.id""",
+                (course_id,),
+            )
+
+
+    class TaskRepository(BaseRepository):
+        table = "tasks"
+        writable = (
+            "chapter_id",
+            "type",
+            "title",
+            "description",
+            "duration",
+            "required",
+            "resource_id",
+            "quiz_id",
+            "assignment_id",
+            "order_no",
+        )
+
+        BASE_SELECT = """
+            SELECT t.*, ch.course_id, ch.title AS chapter_title, ch.order_no AS chapter_order,
+                   r.title AS resource_title, r.filename AS resource_filename,
+                   q.title AS quiz_title, a.title AS assignment_title
+              FROM tasks t
+              JOIN chapters ch ON ch.id = t.chapter_id
+              LEFT JOIN resources r   ON r.id = t.resource_id
+              LEFT JOIN quizzes q     ON q.id = t.quiz_id
+              LEFT JOIN assignments a ON a.id = t.assignment_id
+        """
+
+        def list_by_chapter(self, chapter_id: int) -> list[dict[str, Any]]:
+            return connection.query_all(
+                self.BASE_SELECT
+                + " WHERE t.chapter_id = ? ORDER BY t.order_no, t.id",
+                (chapter_id,),
+            )
+
+        def list_by_course(self, course_id: int) -> list[dict[str, Any]]:
+            return connection.query_all(
+                self.BASE_SELECT
+                + """ WHERE ch.course_id = ?
+                      ORDER BY ch.order_no, ch.id, t.order_no, t.id""",
+                (course_id,),
+            )
+
+        def detail(self, task_id: int) -> dict[str, Any] | None:
+            return connection.query_one(
+                self.BASE_SELECT + " WHERE t.id = ?", (task_id,)
+            )
+
+        def next_order_no(self, chapter_id: int) -> int:
+            value = connection.scalar(
+                "SELECT MAX(order_no) FROM tasks WHERE chapter_id = ?",
+                (chapter_id,),
+                default=0,
+            )
+            return int(value or 0) + 1
+
+        def course_of(self, task_id: int) -> int | None:
+            value = connection.scalar(
+                """SELECT ch.course_id FROM tasks t
+                     JOIN chapters ch ON ch.id = t.chapter_id
+                    WHERE t.id = ?""",
+                (task_id,),
+            )
+            return int(value) if value is not None else None
+
+
+    class TaskProgressRepository(BaseRepository):
+        table = "task_progress"
+        writable = (
+            "task_id",
+            "student_id",
+            "status",
+            "progress",
+            "started_at",
+            "finished_at",
+        )
+
+        def get(self, task_id: int, student_id: int) -> dict[str, Any] | None:
+            return self.find_by(task_id=task_id, student_id=student_id)
+
+        def list_by_course(self, course_id: int) -> list[dict[str, Any]]:
+            """课程下所有学习进度，统计用；章节/任务信息一并带出。"""
+            return connection.query_all(
+                """SELECT tp.*, t.chapter_id, t.title AS task_title
+                     FROM task_progress tp
+                     JOIN tasks t ON t.id = tp.task_id
+                     JOIN chapters ch ON ch.id = t.chapter_id
+                    WHERE ch.course_id = ?""",
+                (course_id,),
+            )
+
+        def list_by_student_course(self, student_id: int,
+                                   course_id: int) -> list[dict[str, Any]]:
+            return connection.query_all(
+                """SELECT tp.task_id, tp.status, tp.progress,
+                          tp.started_at, tp.finished_at, tp.updated_at
+                     FROM task_progress tp
+                     JOIN tasks t ON t.id = tp.task_id
+                     JOIN chapters ch ON ch.id = t.chapter_id
+                    WHERE ch.course_id = ? AND tp.student_id = ?""",
+                (course_id, student_id),
+            )
+
+        def save(self, task_id: int, student_id: int,
+                 data: dict[str, Any]) -> dict[str, Any]:
+            """有记录则更新，无记录则创建，返回最新一条。"""
+            existing = self.get(task_id, student_id)
+            if existing:
+                self.update(int(existing["id"]), data)
+            else:
+                payload = dict(data)
+                payload.update({"task_id": task_id, "student_id": student_id})
+                self.insert(payload)
+            return self.get(task_id, student_id) or {}
+    return SimpleNamespace(
+        ChapterRepository=ChapterRepository,
+        TaskRepository=TaskRepository,
+        TaskProgressRepository=TaskProgressRepository,
     )
 
 
@@ -7083,6 +7372,795 @@ def _mod_discussion_service(AuditRepository, ClassRepository, CourseRepository, 
 
 
 # ======================================================================
+# 模块：backend/services/chapter_service.py
+# ======================================================================
+def _mod_chapter_service(AssignmentRepository, AuditRepository, ChapterRepository, ClassRepository, CourseRepository, EnrollmentRepository, ForbiddenError, NotFoundError, QuizRepository, ResourceRepository, TaskProgressRepository, TaskRepository, ValidationError, clock, permissions, validators):
+    """章节任务点与学习进度。
+
+    学习通的课程内容以「章节 -> 任务点」组织：教师建章节、往章节里放任务点
+    （资料、作业、测验、讨论或纯图文），学生逐个完成，系统记录完成度并汇总
+    成课程学习进度。
+
+    设计要点：
+    - 章节挂在课程上，一门课的所有教学班共用同一套章节；
+    - 任务点通过 resource_id / quiz_id / assignment_id 关联到已有内容，不复制一份；
+    - task_progress 只在学生真正开始后才写记录，没有记录即「未开始」；
+    - 学生只能给自己上报进度，教师只能看自己课程的完成率。
+    """
+
+
+    from collections import defaultdict
+    from typing import Any
+
+
+    chapter_repo = ChapterRepository()
+    task_repo = TaskRepository()
+    progress_repo = TaskProgressRepository()
+    course_repo = CourseRepository()
+    class_repo = ClassRepository()
+    enroll_repo = EnrollmentRepository()
+    resource_repo = ResourceRepository()
+    assignment_repo = AssignmentRepository()
+    quiz_repo = QuizRepository()
+    audit_repo = AuditRepository()
+
+    TASK_TYPES = ("material", "assignment", "quiz", "discussion", "text")
+    TASK_TYPE_LABELS = {
+        "material": "资料",
+        "assignment": "作业",
+        "quiz": "测验",
+        "discussion": "讨论",
+        "text": "图文",
+    }
+
+    # 任务点类型 -> 允许关联的字段
+    TYPE_LINK_FIELDS = {
+        "material": "resource_id",
+        "assignment": "assignment_id",
+        "quiz": "quiz_id",
+    }
+
+    _MISSING = object()
+
+
+    # ---------------------------------------------------------------------------
+    # 内部工具
+    # ---------------------------------------------------------------------------
+
+
+    def _course_or_fail(course_id: int) -> dict[str, Any]:
+        course = course_repo.detail(course_id)
+        if course is None:
+            raise NotFoundError("课程不存在")
+        return course
+
+
+    def _chapter_or_fail(chapter_id: int) -> dict[str, Any]:
+        chapter = chapter_repo.detail(chapter_id)
+        if chapter is None:
+            raise NotFoundError("章节不存在")
+        return chapter
+
+
+    def _task_or_fail(task_id: int, message: str = "任务点不存在") -> dict[str, Any]:
+        task = task_repo.detail(task_id)
+        if task is None:
+            raise NotFoundError(message)
+        return task
+
+
+    def _assert_can_view(viewer: dict[str, Any], course: dict[str, Any]) -> bool:
+        """校验课程可见性，返回学生是否已选课。"""
+        class_ids = {int(item["id"]) for item in class_repo.of_course(int(course["id"]))}
+        enrolled = bool(
+            class_ids & set(enroll_repo.class_ids_of_student(int(viewer["id"])))
+        )
+        permissions.assert_can_view_course(viewer, course, enrolled=enrolled)
+        return enrolled
+
+
+    def _assert_enrolled(student: dict[str, Any], course_id: int) -> None:
+        class_ids = {int(item["id"]) for item in class_repo.of_course(course_id)}
+        if not (class_ids & set(enroll_repo.class_ids_of_student(int(student["id"])))):
+            raise ForbiddenError("你还没有加入该课程的教学班")
+
+
+    def _percent(done: int, total: int) -> float:
+        if total <= 0:
+            return 0.0
+        return round(min(100.0, done * 100.0 / total), 1)
+
+
+    def _progress_payload(row: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not row:
+            return None
+        return {
+            "status": row.get("status") or "in_progress",
+            "progress": int(row.get("progress") or 0),
+            "started_at": row.get("started_at"),
+            "finished_at": row.get("finished_at"),
+            "updated_at": row.get("updated_at"),
+        }
+
+
+    def _task_public(task: dict[str, Any]) -> dict[str, Any]:
+        """任务点的公共字段（去掉仅统计需要的列）。"""
+        return {
+            "id": int(task["id"]),
+            "chapter_id": int(task["chapter_id"]),
+            "type": task["type"],
+            "type_label": TASK_TYPE_LABELS.get(task["type"], task["type"]),
+            "title": task["title"],
+            "description": task.get("description") or "",
+            "duration": int(task.get("duration") or 0),
+            "required": bool(task.get("required", 1)),
+            "resource_id": task.get("resource_id"),
+            "resource_title": task.get("resource_title"),
+            "resource_filename": task.get("resource_filename"),
+            "quiz_id": task.get("quiz_id"),
+            "quiz_title": task.get("quiz_title"),
+            "assignment_id": task.get("assignment_id"),
+            "assignment_title": task.get("assignment_title"),
+            "order_no": int(task.get("order_no") or 0),
+        }
+
+
+    # ---------------------------------------------------------------------------
+    # 章节
+    # ---------------------------------------------------------------------------
+
+
+    def list_chapters(viewer: dict[str, Any], course_id: int) -> dict[str, Any]:
+        """课程章节树 + 任务点，学生带自己的进度，教师带完成率。"""
+        course = _course_or_fail(course_id)
+        _assert_can_view(viewer, course)
+
+        chapters = chapter_repo.list_by_course(course_id)
+        tasks = task_repo.list_by_course(course_id)
+        grouped: dict[int, list[dict[str, Any]]] = {int(ch["id"]): [] for ch in chapters}
+        for task in tasks:
+            grouped.setdefault(int(task["chapter_id"]), []).append(task)
+
+        is_student = viewer["role"] == permissions.ROLE_STUDENT
+        viewer_id = int(viewer["id"])
+        students = [] if is_student else chapter_repo.students_of_course(course_id)
+        student_count = len(students)
+        student_ids = {int(row["student_id"]) for row in students}
+
+        my_progress: dict[int, dict[str, Any]] = {}
+        completed_by_task: dict[int, int] = defaultdict(int)
+        for row in progress_repo.list_by_course(course_id):
+            task_id = int(row["task_id"])
+            student_id = int(row["student_id"])
+            if is_student and student_id == viewer_id:
+                my_progress[task_id] = row
+            if student_id in student_ids and row["status"] == "completed":
+                completed_by_task[task_id] += 1
+
+        items: list[dict[str, Any]] = []
+        for chapter in chapters:
+            chapter_id = int(chapter["id"])
+            chapter_tasks: list[dict[str, Any]] = []
+            completed = 0
+            progress_sum = 0
+            for task in grouped.get(chapter_id, []):
+                task_id = int(task["id"])
+                item = _task_public(task)
+                if is_student:
+                    row = my_progress.get(task_id)
+                    item["my_progress"] = _progress_payload(row)
+                    item["progress"] = int(row.get("progress") or 0) if row else 0
+                    item["completed"] = bool(row and row["status"] == "completed")
+                    progress_sum += item["progress"]
+                    if item["completed"]:
+                        completed += 1
+                else:
+                    done = completed_by_task.get(task_id, 0)
+                    item["completed_count"] = done
+                    item["student_count"] = student_count
+                    item["progress"] = _percent(done, student_count)
+                    completed += done
+                chapter_tasks.append(item)
+
+            total = len(chapter_tasks)
+            if is_student:
+                # 学生视角看「学习进度」：进行中的任务按百分比计入，
+                # 而不是只有 100% 才算数。
+                progress = round(progress_sum / total, 1) if total else 0.0
+            else:
+                progress = _percent(completed, total * student_count)
+
+            items.append(
+                {
+                    "id": chapter_id,
+                    "course_id": int(chapter["course_id"]),
+                    "title": chapter["title"],
+                    "description": chapter.get("description") or "",
+                    "order_no": int(chapter.get("order_no") or 0),
+                    "task_count": len(chapter_tasks),
+                    "completed_count": completed,
+                    "progress": progress,
+                    "student_count": student_count,
+                    "tasks": chapter_tasks,
+                }
+            )
+
+        total_tasks = len(tasks)
+        if is_student:
+            completed_total = sum(
+                1
+                for row in my_progress.values()
+                if row.get("status") == "completed"
+            )
+            progress_sum = sum(
+                int(row.get("progress") or 0)
+                for row in my_progress.values()
+            )
+            summary_progress = (
+                round(progress_sum / total_tasks, 1) if total_tasks else 0.0
+            )
+        else:
+            completed_total = sum(completed_by_task.values())
+            summary_progress = _percent(completed_total, total_tasks * student_count)
+
+        return {
+            "course_id": course_id,
+            "course_name": course["name"],
+            "items": items,
+            "summary": {
+                "chapter_count": len(items),
+                "task_count": total_tasks,
+                "completed_count": completed_total,
+                "progress": summary_progress,
+                "student_count": student_count,
+            },
+        }
+
+
+    def create_chapter(operator: dict[str, Any], course_id: int,
+                       payload: dict[str, Any]) -> dict[str, Any]:
+        course = _course_or_fail(course_id)
+        permissions.assert_can_manage_course(operator, course)
+
+        title = validators.required_str(payload, "title", min_len=2, max_len=120)
+        description = validators.optional_str(payload, "description", "", max_len=2000)
+        order_no = validators.optional_int(
+            payload, "order_no", chapter_repo.next_order_no(course_id), min_value=1,
+            max_value=9999,
+        )
+        chapter_id = chapter_repo.insert(
+            {
+                "course_id": course_id,
+                "title": title,
+                "description": description,
+                "order_no": int(order_no or 1),
+            }
+        )
+        audit_repo.log(
+            user_id=int(operator["id"]),
+            username=operator["username"],
+            action="create_chapter",
+            entity="chapter",
+            entity_id=chapter_id,
+            detail=f"{course['name']} / {title}",
+        )
+        return chapter_repo.detail(chapter_id) or {}
+
+
+    def update_chapter(operator: dict[str, Any], chapter_id: int,
+                       payload: dict[str, Any]) -> dict[str, Any]:
+        chapter = _chapter_or_fail(chapter_id)
+        course = _course_or_fail(int(chapter["course_id"]))
+        permissions.assert_can_manage_course(operator, course)
+
+        updates: dict[str, Any] = {}
+        if "title" in payload:
+            updates["title"] = validators.required_str(payload, "title", min_len=2, max_len=120)
+        if "description" in payload:
+            updates["description"] = validators.optional_str(
+                payload, "description", "", max_len=2000
+            )
+        if "order_no" in payload:
+            updates["order_no"] = validators.required_int(
+                payload, "order_no", min_value=1, max_value=9999
+            )
+        if updates:
+            chapter_repo.update(chapter_id, updates)
+            audit_repo.log(
+                user_id=int(operator["id"]),
+                username=operator["username"],
+                action="update_chapter",
+                entity="chapter",
+                entity_id=chapter_id,
+                detail=f"更新章节字段：{', '.join(updates)}",
+            )
+        return chapter_repo.detail(chapter_id) or {}
+
+
+    def delete_chapter(operator: dict[str, Any], chapter_id: int) -> None:
+        chapter = _chapter_or_fail(chapter_id)
+        course = _course_or_fail(int(chapter["course_id"]))
+        permissions.assert_can_manage_course(operator, course)
+        chapter_repo.delete(chapter_id)  # 任务点与进度由外键级联删除
+        audit_repo.log(
+            user_id=int(operator["id"]),
+            username=operator["username"],
+            action="delete_chapter",
+            entity="chapter",
+            entity_id=chapter_id,
+            detail=chapter.get("title", ""),
+        )
+
+
+    # ---------------------------------------------------------------------------
+    # 任务点
+    # ---------------------------------------------------------------------------
+
+
+    def _link_int(payload: dict[str, Any], key: str) -> Any:
+        if key not in payload:
+            return _MISSING
+        raw = payload[key]
+        if raw in (None, "", 0, "0"):
+            return None
+        return validators.to_int(raw, key, min_value=1)
+
+
+    def _validate_resource(course_id: int, resource_id: int) -> None:
+        row = resource_repo.find(resource_id)
+        if row is None:
+            raise NotFoundError("关联的资料不存在")
+        if int(row["course_id"]) != course_id:
+            raise ValidationError("关联的资料不属于本课程")
+
+
+    def _validate_assignment(course_id: int, assignment_id: int) -> None:
+        row = assignment_repo.detail(assignment_id)
+        if row is None:
+            raise NotFoundError("关联的作业不存在")
+        if int(row["course_id"]) != course_id:
+            raise ValidationError("关联的作业不属于本课程")
+
+
+    def _validate_quiz(course_id: int, quiz_id: int) -> None:
+        row = quiz_repo.detail(quiz_id)
+        if row is None:
+            raise NotFoundError("关联的测验不存在")
+        if int(row["course_id"]) != course_id:
+            raise ValidationError("关联的测验不属于本课程")
+
+
+    def _task_fields(payload: dict[str, Any], course_id: int,
+                     existing: dict[str, Any] | None = None) -> dict[str, Any]:
+        """把请求体规范化成可写字段，同时校验关联内容归属。"""
+        if "type" in payload:
+            task_type = validators.ensure_enum(
+                str(payload["type"]).strip(), TASK_TYPES, "任务点类型"
+            )
+        elif existing:
+            task_type = str(existing["type"])
+        else:
+            task_type = "material"
+
+        fields: dict[str, Any] = {"type": task_type}
+        if "title" in payload or not existing:
+            fields["title"] = validators.required_str(payload, "title", min_len=2, max_len=120)
+        if "description" in payload:
+            fields["description"] = validators.optional_str(
+                payload, "description", "", max_len=2000
+            )
+        if "duration" in payload:
+            fields["duration"] = validators.optional_int(
+                payload, "duration", 0, min_value=0, max_value=600
+            )
+        if "required" in payload:
+            fields["required"] = 1 if validators.to_bool(payload.get("required"), True) else 0
+        if "order_no" in payload:
+            fields["order_no"] = validators.required_int(
+                payload, "order_no", min_value=1, max_value=9999
+            )
+
+        allowed = TYPE_LINK_FIELDS.get(task_type)
+        type_changed = bool(existing and str(existing["type"]) != task_type)
+        for key in ("resource_id", "assignment_id", "quiz_id"):
+            raw = _link_int(payload, key)
+            if key == allowed:
+                if raw is _MISSING:
+                    if not existing or type_changed:
+                        fields[key] = None
+                    continue
+                if raw is None:
+                    fields[key] = None
+                    continue
+                if key == "resource_id":
+                    _validate_resource(course_id, int(raw))
+                elif key == "assignment_id":
+                    _validate_assignment(course_id, int(raw))
+                else:
+                    _validate_quiz(course_id, int(raw))
+                fields[key] = int(raw)
+            else:
+                if raw not in (_MISSING, None):
+                    raise ValidationError("任务点类型与关联内容不匹配")
+                if type_changed:
+                    fields[key] = None
+        return fields
+
+
+    def create_task(operator: dict[str, Any], chapter_id: int,
+                    payload: dict[str, Any]) -> dict[str, Any]:
+        chapter = _chapter_or_fail(chapter_id)
+        course = _course_or_fail(int(chapter["course_id"]))
+        permissions.assert_can_manage_course(operator, course)
+
+        fields = _task_fields(payload, int(chapter["course_id"]))
+        fields["chapter_id"] = chapter_id
+        fields.setdefault("order_no", task_repo.next_order_no(chapter_id))
+        task_id = task_repo.insert(fields)
+        audit_repo.log(
+            user_id=int(operator["id"]),
+            username=operator["username"],
+            action="create_task",
+            entity="task",
+            entity_id=task_id,
+            detail=f"{chapter['title']} / {fields['title']}",
+        )
+        return _task_public(task_repo.detail(task_id) or {})
+
+
+    def update_task(operator: dict[str, Any], task_id: int,
+                    payload: dict[str, Any]) -> dict[str, Any]:
+        task = _task_or_fail(task_id)
+        course = _course_or_fail(int(task["course_id"]))
+        permissions.assert_can_manage_course(operator, course)
+
+        fields = _task_fields(payload, int(task["course_id"]), existing=task)
+        changes = {
+            key: value for key, value in fields.items() if task.get(key) != value
+        }
+        if changes:
+            task_repo.update(task_id, changes)
+            audit_repo.log(
+                user_id=int(operator["id"]),
+                username=operator["username"],
+                action="update_task",
+                entity="task",
+                entity_id=task_id,
+                detail=f"更新任务点字段：{', '.join(changes)}",
+            )
+        return _task_public(task_repo.detail(task_id) or {})
+
+
+    def delete_task(operator: dict[str, Any], task_id: int) -> None:
+        task = _task_or_fail(task_id)
+        course = _course_or_fail(int(task["course_id"]))
+        permissions.assert_can_manage_course(operator, course)
+        task_repo.delete(task_id)
+        audit_repo.log(
+            user_id=int(operator["id"]),
+            username=operator["username"],
+            action="delete_task",
+            entity="task",
+            entity_id=task_id,
+            detail=task.get("title", ""),
+        )
+
+
+    # ---------------------------------------------------------------------------
+    # 学习进度
+    # ---------------------------------------------------------------------------
+
+
+    def _student_course_stats(course_id: int,
+                              student_id: int) -> dict[str, Any]:
+        """某个学生在某门课上的任务进度快照。"""
+        tasks = task_repo.list_by_course(course_id)
+        rows = {
+            int(row["task_id"]): row
+            for row in progress_repo.list_by_student_course(student_id, course_id)
+        }
+        chapter_tasks: dict[int, list[int]] = defaultdict(list)
+        for task in tasks:
+            chapter_tasks[int(task["chapter_id"])].append(int(task["id"]))
+
+        chapters: dict[int, dict[str, Any]] = {}
+        for chapter_id, task_ids in chapter_tasks.items():
+            done = sum(
+                1 for task_id in task_ids
+                if rows.get(task_id, {}).get("status") == "completed"
+            )
+            progress_sum = sum(
+                int(rows.get(task_id, {}).get("progress") or 0)
+                for task_id in task_ids
+            )
+            chapters[chapter_id] = {
+                "task_count": len(task_ids),
+                "completed_count": done,
+                "progress": (
+                    round(progress_sum / len(task_ids), 1) if task_ids else 0.0
+                ),
+            }
+        completed_total = sum(
+            1 for row in rows.values() if row.get("status") == "completed"
+        )
+        progress_sum = sum(int(row.get("progress") or 0) for row in rows.values())
+        return {
+            "task_count": len(tasks),
+            "completed_count": completed_total,
+            "progress": round(progress_sum / len(tasks), 1) if tasks else 0.0,
+            "chapters": chapters,
+        }
+
+
+    def report_progress(student: dict[str, Any], task_id: int,
+                        payload: dict[str, Any]) -> dict[str, Any]:
+        """学生上报任务点进度；100 即完成，会自动写入完成时间。"""
+        permissions.require_role(student, permissions.ROLE_STUDENT)
+        task = _task_or_fail(task_id)
+        course_id = int(task["course_id"])
+        _assert_enrolled(student, course_id)
+
+        existing = progress_repo.get(task_id, int(student["id"]))
+        raw_status = payload.get("status")
+        status = None
+        if raw_status not in (None, ""):
+            status = validators.ensure_enum(
+                str(raw_status).strip(), ("in_progress", "completed"), "进度状态"
+            )
+
+        has_progress = "progress" in payload and payload["progress"] not in (None, "")
+        progress = (
+            validators.to_int(payload["progress"], "学习进度", min_value=0, max_value=100)
+            if has_progress
+            else None
+        )
+        if progress is None and status is None:
+            raise ValidationError("请提供 progress 或 status")
+
+        if status == "completed":
+            progress = 100
+        elif progress == 100:
+            status = "completed"
+        elif progress is not None:
+            status = "in_progress"
+        else:  # status == in_progress 且没给具体数值：至少推进到 10%
+            progress = max(int(existing["progress"]) if existing else 0, 10)
+
+        now = clock.now_iso()
+        started_at = None
+        if existing and existing.get("started_at"):
+            started_at = existing["started_at"]
+        if not started_at:
+            started_at = now
+        if progress >= 100:
+            # 重复点「完成」不应刷新首次完成时间
+            if (
+                existing
+                and existing.get("status") == "completed"
+                and existing.get("finished_at")
+            ):
+                finished_at = existing["finished_at"]
+            else:
+                finished_at = now
+        else:
+            finished_at = None
+
+        row = progress_repo.save(
+            task_id,
+            int(student["id"]),
+            {
+                "status": status,
+                "progress": progress,
+                "started_at": started_at,
+                "finished_at": finished_at,
+            },
+        )
+
+        newly_completed = (
+            status == "completed"
+            and (not existing or existing.get("status") != "completed")
+        )
+        if newly_completed:
+            audit_repo.log(
+                user_id=int(student["id"]),
+                username=student["username"],
+                action="complete_task",
+                entity="task",
+                entity_id=task_id,
+                detail=task.get("title", ""),
+            )
+
+        stats = _student_course_stats(course_id, int(student["id"]))
+        chapter = stats["chapters"].get(int(task["chapter_id"]), {})
+        return {
+            "task_id": task_id,
+            "status": row.get("status"),
+            "progress": int(row.get("progress") or 0),
+            "started_at": row.get("started_at"),
+            "finished_at": row.get("finished_at"),
+            "chapter": {
+                "id": int(task["chapter_id"]),
+                "task_count": chapter.get("task_count", 0),
+                "completed_count": chapter.get("completed_count", 0),
+                "progress": chapter.get("progress", 0.0),
+            },
+            "course": {
+                "task_count": stats["task_count"],
+                "completed_count": stats["completed_count"],
+                "progress": stats["progress"],
+            },
+        }
+
+
+    def course_progress(viewer: dict[str, Any], course_id: int) -> dict[str, Any]:
+        """教师视角：整门课的任务点完成率与学生明细。"""
+        course = _course_or_fail(course_id)
+        permissions.assert_can_manage_course(viewer, course)
+
+        chapters = chapter_repo.list_by_course(course_id)
+        tasks = task_repo.list_by_course(course_id)
+        students = chapter_repo.students_of_course(course_id)
+        student_count = len(students)
+        student_ids = {int(row["student_id"]) for row in students}
+
+        rows = progress_repo.list_by_course(course_id)
+        completed_by_task: dict[int, int] = defaultdict(int)
+        by_student: dict[int, dict[str, Any]] = {}
+        completed_pairs: set[tuple[int, int]] = set()
+        for row in rows:
+            student_id = int(row["student_id"])
+            if student_id not in student_ids:
+                continue
+            record = by_student.setdefault(
+                student_id, {"completed": 0, "last_active_at": None}
+            )
+            record["last_active_at"] = max(
+                filter(None, [record["last_active_at"], row.get("updated_at")]),
+                default=None,
+            )
+            if row["status"] == "completed":
+                record["completed"] += 1
+                completed_by_task[int(row["task_id"])] += 1
+                completed_pairs.add((student_id, int(row["task_id"])))
+
+        total_tasks = len(tasks)
+        student_rows = []
+        for student in students:
+            student_id = int(student["student_id"])
+            record = by_student.get(student_id, {"completed": 0, "last_active_at": None})
+            student_rows.append(
+                {
+                    "student_id": student_id,
+                    "real_name": student["real_name"],
+                    "number": student.get("number"),
+                    "class_name": student.get("class_name"),
+                    "completed_count": record["completed"],
+                    "task_count": total_tasks,
+                    "progress": _percent(record["completed"], total_tasks),
+                    "last_active_at": record["last_active_at"],
+                }
+            )
+
+        chapter_rows = []
+        for chapter in chapters:
+            chapter_task_ids = [
+                int(task["id"]) for task in tasks
+                if int(task["chapter_id"]) == int(chapter["id"])
+            ]
+            done = sum(completed_by_task.get(task_id, 0) for task_id in chapter_task_ids)
+            total = len(chapter_task_ids)
+            completed_students = sum(
+                1
+                for student in students
+                if chapter_task_ids
+                and all(
+                    (int(student["student_id"]), task_id) in completed_pairs
+                    for task_id in chapter_task_ids
+                )
+            )
+            chapter_rows.append(
+                {
+                    "id": int(chapter["id"]),
+                    "title": chapter["title"],
+                    "task_count": total,
+                    "completed_count": done,
+                    "progress": _percent(done, total * student_count),
+                    "completed_students": completed_students,
+                }
+            )
+
+        avg_progress = (
+            round(sum(row["progress"] for row in student_rows) / len(student_rows), 1)
+            if student_rows
+            else 0.0
+        )
+        return {
+            "course_id": course_id,
+            "course_name": course["name"],
+            "task_count": total_tasks,
+            "student_count": student_count,
+            "tasks": [
+                {
+                    "id": int(task["id"]),
+                    "chapter_id": int(task["chapter_id"]),
+                    "chapter_title": task.get("chapter_title"),
+                    "title": task["title"],
+                    "type": task["type"],
+                    "type_label": TASK_TYPE_LABELS.get(task["type"], task["type"]),
+                }
+                for task in tasks
+            ],
+            "chapters": chapter_rows,
+            "students": student_rows,
+            "summary": {
+                "avg_progress": avg_progress,
+                "completed_students": sum(
+                    1 for row in student_rows if row["progress"] >= 100
+                ),
+                "student_count": student_count,
+                "task_count": total_tasks,
+            },
+        }
+
+
+    def my_learning(student: dict[str, Any]) -> list[dict[str, Any]]:
+        """学生视角：我在每门课上的章节任务完成情况（首页/课程页用）。"""
+        permissions.require_role(student, permissions.ROLE_STUDENT)
+        student_id = int(student["id"])
+        seen: set[int] = set()
+        result: list[dict[str, Any]] = []
+        for row in course_repo.of_student(student_id):
+            course_id = int(row["id"])
+            if course_id in seen:
+                continue
+            seen.add(course_id)
+            stats = _student_course_stats(course_id, student_id)
+            result.append(
+                {
+                    "course_id": course_id,
+                    "code": row.get("code"),
+                    "name": row.get("name"),
+                    "teacher_name": row.get("teacher_name"),
+                    "class_name": row.get("class_name"),
+                    "term": row.get("term"),
+                    "chapter_count": chapter_repo.count(
+                        "course_id = ?", (course_id,)
+                    ),
+                    "task_count": stats["task_count"],
+                    "completed_count": stats["completed_count"],
+                    "progress": stats["progress"],
+                }
+            )
+        result.sort(key=lambda item: (-item["progress"], item["name"] or ""))
+        return result
+    return SimpleNamespace(
+        chapter_repo=chapter_repo,
+        task_repo=task_repo,
+        progress_repo=progress_repo,
+        course_repo=course_repo,
+        class_repo=class_repo,
+        enroll_repo=enroll_repo,
+        resource_repo=resource_repo,
+        assignment_repo=assignment_repo,
+        quiz_repo=quiz_repo,
+        audit_repo=audit_repo,
+        TASK_TYPES=TASK_TYPES,
+        TASK_TYPE_LABELS=TASK_TYPE_LABELS,
+        TYPE_LINK_FIELDS=TYPE_LINK_FIELDS,
+        list_chapters=list_chapters,
+        create_chapter=create_chapter,
+        update_chapter=update_chapter,
+        delete_chapter=delete_chapter,
+        create_task=create_task,
+        update_task=update_task,
+        delete_task=delete_task,
+        report_progress=report_progress,
+        course_progress=course_progress,
+        my_learning=my_learning,
+    )
+
+
+# ======================================================================
 # 模块：backend/services/statistics_service.py
 # ======================================================================
 def _mod_statistics_service(AuditRepository, ClassRepository, CourseRepository, EnrollmentRepository, UserRepository, clock, connection, permissions):
@@ -8049,7 +9127,7 @@ def _mod_server_lib(AppError, Request, Response, TooLargeError, build_request, c
 # ======================================================================
 # 模块：backend/db/seed.py
 # ======================================================================
-def _mod_seed_lib(AssignmentRepository, AttemptRepository, AttendanceRecordRepository, AttendanceSessionRepository, ClassRepository, CourseRepository, DiscussionRepository, EnrollmentRepository, GradeItemRepository, GradeRuleRepository, NotificationRepository, QuestionRepository, QuizRepository, ReplyRepository, ResourceRepository, SubmissionRepository, UserRepository, clock, config, connection, ids, migrations, security):
+def _mod_seed_lib(AssignmentRepository, AttemptRepository, AttendanceRecordRepository, AttendanceSessionRepository, ChapterRepository, ClassRepository, CourseRepository, DiscussionRepository, EnrollmentRepository, GradeItemRepository, GradeRuleRepository, NotificationRepository, QuestionRepository, QuizRepository, ReplyRepository, ResourceRepository, SettingRepository, SubmissionRepository, TaskProgressRepository, TaskRepository, UserRepository, clock, config, connection, ids, migrations, security):
     """演示数据初始化。
 
     生成一套完整可演示的数据：管理员、教师、学生、课程、教学班、
@@ -8082,6 +9160,10 @@ def _mod_seed_lib(AssignmentRepository, AttemptRepository, AttendanceRecordRepos
     notification_repo = NotificationRepository()
     rule_repo = GradeRuleRepository()
     item_repo = GradeItemRepository()
+    chapter_repo = ChapterRepository()
+    task_repo = TaskRepository()
+    progress_repo = TaskProgressRepository()
+    setting_repo = SettingRepository()
 
     DEFAULT_PASSWORD = "Eduflow@2026"
 
@@ -8193,10 +9275,172 @@ def _mod_seed_lib(AssignmentRepository, AttemptRepository, AttendanceRecordRepos
         return user_repo.by_username("admin") is not None
 
 
+    # ---------------------------------------------------------------------------
+    # 章节任务点与学习进度（对已有演示库同样可补，幂等）
+    # ---------------------------------------------------------------------------
+
+
+    def _add_chapter(course_id: int, title: str, description: str,
+                     order_no: int) -> int:
+        return chapter_repo.insert(
+            {
+                "course_id": course_id,
+                "title": title,
+                "description": description,
+                "order_no": order_no,
+            }
+        )
+
+
+    def _add_task(chapter_id: int, task_type: str, title: str, *,
+                  description: str = "", duration: int = 30, required: int = 1,
+                  resource_id: int | None = None, quiz_id: int | None = None,
+                  assignment_id: int | None = None) -> int:
+        return task_repo.insert(
+            {
+                "chapter_id": chapter_id,
+                "type": task_type,
+                "title": title,
+                "description": description,
+                "duration": duration,
+                "required": required,
+                "resource_id": resource_id,
+                "quiz_id": quiz_id,
+                "assignment_id": assignment_id,
+                "order_no": task_repo.next_order_no(chapter_id),
+            }
+        )
+
+
+    def ensure_chapters() -> dict[str, Any]:
+        """给 CS101 建一套演示章节；已有章节或已初始化过时直接跳过。"""
+        if setting_repo.get("chapters_seeded") == "1":
+            return {"skipped": True, "reason": "章节演示数据已初始化"}
+        if chapter_repo.count() > 0:
+            setting_repo.set("chapters_seeded", "1")
+            return {"skipped": True, "reason": "已存在章节数据"}
+
+        course = course_repo.find_by(code="CS101")
+        teacher = user_repo.by_username("t1001")
+        if not course or not teacher:
+            return {"skipped": True, "reason": "缺少 CS101 演示课程或教师"}
+
+        course_id = int(course["id"])
+        teacher_id = int(teacher["id"])
+        classes = class_repo.of_course(course_id)
+        if not classes:
+            return {"skipped": True, "reason": "CS101 还没有教学班"}
+
+        class_id = int(classes[0]["id"])
+        resource = resource_repo.find_by(course_id=course_id, title="课程大纲")
+        quiz = quiz_repo.find_by(class_id=class_id)
+        discussion = discussion_repo.find_by(course_id=course_id)
+        assignments = sorted(
+            assignment_repo.list_by_class(class_id, limit=10), key=lambda row: int(row["id"])
+        )
+
+        chapter_one = _add_chapter(
+            course_id, "第 1 章 绪论与算法分析", "课程导学、算法复杂度与学习要求。", 1
+        )
+        task_ids: dict[str, int] = {}
+        task_ids["syllabus"] = _add_task(
+            chapter_one, "material", "阅读《课程大纲》",
+            description="了解考核方式、教材与实验安排。", duration=20,
+            resource_id=int(resource["id"]) if resource else None,
+        )
+        task_ids["guide"] = _add_task(
+            chapter_one, "text", "课程导学：如何学好数据结构",
+            description="先修知识、学习路线与常见误区。", duration=15,
+        )
+
+        chapter_two = _add_chapter(
+            course_id, "第 2 章 线性表", "顺序表、链表与相关操作的复杂度分析。", 2
+        )
+        task_ids["linear"] = _add_task(
+            chapter_two, "text", "线性表重点梳理",
+            description="顺序表与链表的插入、删除、查找对比。", duration=40,
+        )
+        if quiz:
+            task_ids["quiz"] = _add_task(
+                chapter_two, "quiz", "第一章随堂测验",
+                description="限时 30 分钟，检验线性表掌握情况。", duration=30,
+                quiz_id=int(quiz["id"]),
+            )
+        if discussion:
+            task_ids["discussion"] = _add_task(
+                chapter_two, "discussion", "参与讨论：复杂度疑问",
+                description="在讨论区提出或回答一个复杂度相关的问题。", duration=10,
+            )
+
+        chapter_three = _add_chapter(
+            course_id, "第 3 章 树与二叉树", "二叉树遍历、递归与典型应用。", 3
+        )
+        for index, assignment in enumerate(assignments[:2]):
+            task_ids[f"assignment_{index}"] = _add_task(
+                chapter_three,
+                "assignment",
+                assignment["title"],
+                description="按作业要求提交源码与实验报告。",
+                duration=90,
+                assignment_id=int(assignment["id"]),
+            )
+
+        # 给前几位学生造一些学习痕迹，让进度条不是空的
+        students = chapter_repo.students_of_course(course_id)
+        now = clock.utcnow()
+        plan = [
+            (0, "syllabus", "completed", 100, 9),
+            (0, "guide", "completed", 100, 9),
+            (0, "linear", "completed", 100, 7),
+            (0, "quiz", "in_progress", 40, 2),
+            (0, "discussion", "completed", 100, 6),
+            (1, "syllabus", "completed", 100, 8),
+            (1, "guide", "completed", 100, 8),
+            (1, "linear", "in_progress", 60, 3),
+            (2, "syllabus", "completed", 100, 10),
+            (2, "guide", "completed", 100, 10),
+            (2, "linear", "completed", 100, 9),
+            (2, "quiz", "completed", 100, 5),
+            (2, "discussion", "completed", 100, 8),
+            (3, "syllabus", "completed", 100, 6),
+            (4, "syllabus", "completed", 100, 4),
+            (4, "guide", "completed", 100, 4),
+        ]
+        progress_count = 0
+        for student_index, key, status, progress, days_ago in plan:
+            if student_index >= len(students) or key not in task_ids:
+                continue
+            student_id = int(students[student_index]["student_id"])
+            started = clock.to_iso(clock.add_days(now, -days_ago))
+            progress_repo.insert(
+                {
+                    "task_id": task_ids[key],
+                    "student_id": student_id,
+                    "status": status,
+                    "progress": progress,
+                    "started_at": started,
+                    "finished_at": started if status == "completed" else None,
+                }
+            )
+            progress_count += 1
+
+        setting_repo.set("chapters_seeded", "1")
+        return {
+            "skipped": False,
+            "chapters": 3,
+            "tasks": len(task_ids),
+            "progress": progress_count,
+        }
+
+
     def seed(force: bool = False) -> dict[str, Any]:
         migrations.init_db()
         if is_seeded() and not force:
-            return {"skipped": True, "reason": "已存在演示数据"}
+            return {
+                "skipped": True,
+                "reason": "已存在演示数据",
+                "chapters": ensure_chapters(),
+            }
 
         if force:
             migrations.reset_db()
@@ -8525,6 +9769,11 @@ def _mod_seed_lib(AssignmentRepository, AttemptRepository, AttendanceRecordRepos
             )
         created["notifications"] = 6
 
+        chapter_stats = ensure_chapters()
+        created["chapters"] = chapter_stats.get("chapters", 0)
+        created["tasks"] = chapter_stats.get("tasks", 0)
+        created["task_progress"] = chapter_stats.get("progress", 0)
+
         connection.get_connection().execute("PRAGMA wal_checkpoint(TRUNCATE)")
         return {"skipped": False, "created": created, "password": DEFAULT_PASSWORD}
 
@@ -8538,6 +9787,9 @@ def _mod_seed_lib(AssignmentRepository, AttemptRepository, AttendanceRecordRepos
             "submissions": int(connection.scalar("SELECT COUNT(*) FROM submissions", default=0) or 0),
             "quizzes": int(connection.scalar("SELECT COUNT(*) FROM quizzes", default=0) or 0),
             "attendance": int(connection.scalar("SELECT COUNT(*) FROM attendance_records", default=0) or 0),
+            "chapters": int(connection.scalar("SELECT COUNT(*) FROM chapters", default=0) or 0),
+            "tasks": int(connection.scalar("SELECT COUNT(*) FROM tasks", default=0) or 0),
+            "task_progress": int(connection.scalar("SELECT COUNT(*) FROM task_progress", default=0) or 0),
         }
     return SimpleNamespace(
         user_repo=user_repo,
@@ -8557,6 +9809,10 @@ def _mod_seed_lib(AssignmentRepository, AttemptRepository, AttendanceRecordRepos
         notification_repo=notification_repo,
         rule_repo=rule_repo,
         item_repo=item_repo,
+        chapter_repo=chapter_repo,
+        task_repo=task_repo,
+        progress_repo=progress_repo,
+        setting_repo=setting_repo,
         DEFAULT_PASSWORD=DEFAULT_PASSWORD,
         TEACHERS=TEACHERS,
         STUDENTS=STUDENTS,
@@ -8564,6 +9820,7 @@ def _mod_seed_lib(AssignmentRepository, AttemptRepository, AttendanceRecordRepos
         ASSIGNMENT_TEMPLATES=ASSIGNMENT_TEMPLATES,
         QUIZ_QUESTIONS=QUIZ_QUESTIONS,
         is_seeded=is_seeded,
+        ensure_chapters=ensure_chapters,
         seed=seed,
         summary=summary,
     )
@@ -8886,6 +10143,122 @@ def _mod_course_api(Response, Router, course_service, created, ok, paginated, pe
         drop_student=drop_student,
         leave_class=leave_class,
         teacher_overview=teacher_overview,
+    )
+
+
+# ======================================================================
+# 模块：backend/api/chapter_routes.py
+# ======================================================================
+def _mod_chapter_api(Response, Router, chapter_service, created, ok, permissions):
+    """章节任务点与学习进度接口。"""
+
+
+
+    router = Router()
+
+
+    # ---------------------------------------------------------------- 章节
+
+
+    @router.get("/api/courses/<int:course_id>/chapters", summary="课程章节与任务点")
+    def list_chapters(req) -> Response:
+        user = permissions.require_login(req.user)
+        return ok(chapter_service.list_chapters(user, req.path_params["course_id"]))
+
+
+    @router.post("/api/courses/<int:course_id>/chapters",
+                 roles=("teacher", "admin"), summary="新建章节")
+    def create_chapter(req) -> Response:
+        user = permissions.require_teacher(req.user)
+        data = chapter_service.create_chapter(
+            user, req.path_params["course_id"], req.json()
+        )
+        return created(data, "章节已创建")
+
+
+    @router.put("/api/chapters/<int:chapter_id>", roles=("teacher", "admin"),
+                summary="更新章节")
+    def update_chapter(req) -> Response:
+        user = permissions.require_teacher(req.user)
+        data = chapter_service.update_chapter(
+            user, req.path_params["chapter_id"], req.json()
+        )
+        return ok(data, "章节已更新")
+
+
+    @router.delete("/api/chapters/<int:chapter_id>", roles=("teacher", "admin"),
+                   summary="删除章节")
+    def delete_chapter(req) -> Response:
+        user = permissions.require_teacher(req.user)
+        chapter_service.delete_chapter(user, req.path_params["chapter_id"])
+        return ok(None, "章节已删除")
+
+
+    # ---------------------------------------------------------------- 任务点
+
+
+    @router.post("/api/chapters/<int:chapter_id>/tasks",
+                 roles=("teacher", "admin"), summary="新增任务点")
+    def create_task(req) -> Response:
+        user = permissions.require_teacher(req.user)
+        data = chapter_service.create_task(
+            user, req.path_params["chapter_id"], req.json()
+        )
+        return created(data, "任务点已创建")
+
+
+    @router.put("/api/tasks/<int:task_id>", roles=("teacher", "admin"),
+                summary="更新任务点")
+    def update_task(req) -> Response:
+        user = permissions.require_teacher(req.user)
+        data = chapter_service.update_task(user, req.path_params["task_id"], req.json())
+        return ok(data, "任务点已更新")
+
+
+    @router.delete("/api/tasks/<int:task_id>", roles=("teacher", "admin"),
+                   summary="删除任务点")
+    def delete_task(req) -> Response:
+        user = permissions.require_teacher(req.user)
+        chapter_service.delete_task(user, req.path_params["task_id"])
+        return ok(None, "任务点已删除")
+
+
+    # ---------------------------------------------------------------- 学习进度
+
+
+    @router.post("/api/tasks/<int:task_id>/progress", roles=("student",),
+                 summary="上报任务点进度")
+    def report_progress(req) -> Response:
+        user = permissions.require_role(req.user, "student")
+        data = chapter_service.report_progress(
+            user, req.path_params["task_id"], req.json()
+        )
+        return ok(data, "学习进度已更新")
+
+
+    @router.get("/api/courses/<int:course_id>/progress", roles=("teacher", "admin"),
+                summary="课程学习进度")
+    def course_progress(req) -> Response:
+        user = permissions.require_teacher(req.user)
+        return ok(chapter_service.course_progress(user, req.path_params["course_id"]))
+
+
+    @router.get("/api/my/learning", roles=("student",), summary="我的学习进度")
+    def my_learning(req) -> Response:
+        user = permissions.require_role(req.user, "student")
+        return ok(chapter_service.my_learning(user))
+    return SimpleNamespace(
+        router=router,
+        list_chapters=list_chapters,
+        create_chapter=create_chapter,
+        update_chapter=update_chapter,
+        delete_chapter=delete_chapter,
+        create_task=create_task,
+        update_task=update_task,
+        delete_task=delete_task,
+        report_progress=report_progress,
+        course_progress=course_progress,
+        my_learning=my_learning,
     )
 
 
@@ -9801,6 +11174,7 @@ attendance_repo = _mod_attendance_repo(clock=clock, connection=connection, BaseR
 content_repo = _mod_content_repo(clock=clock, connection=connection, BaseRepository=base_repo.BaseRepository)
 grades_repo = _mod_grades_repo(connection=connection, BaseRepository=base_repo.BaseRepository)
 audit_repo = _mod_audit_repo(connection=connection, BaseRepository=base_repo.BaseRepository)
+chapters_repo = _mod_chapters_repo(connection=connection, BaseRepository=base_repo.BaseRepository)
 search_service = _mod_search_service(permissions=permissions, connection=connection)
 auth_service = _mod_auth_service(config=config, clock=clock, ids=ids, permissions=permissions, security=security, ForbiddenError=errors.ForbiddenError, RateLimitError=errors.RateLimitError, UnauthorizedError=errors.UnauthorizedError, ValidationError=errors.ValidationError, AuditRepository=audit_repo.AuditRepository, LoginAttemptRepository=users_repo.LoginAttemptRepository, SessionRepository=users_repo.SessionRepository, UserRepository=users_repo.UserRepository)
 notification_service = _mod_notification_service(permissions=permissions, NotificationRepository=content_repo.NotificationRepository, UserRepository=users_repo.UserRepository)
@@ -9814,15 +11188,17 @@ attendance_service = _mod_attendance_service(config=config, clock=clock, ids=ids
 grade_service = _mod_grade_service(config=config, permissions=permissions, validators=validators, ForbiddenError=errors.ForbiddenError, NotFoundError=errors.NotFoundError, ValidationError=errors.ValidationError, connection=connection, AssignmentRepository=assignments_repo.AssignmentRepository, SubmissionRepository=assignments_repo.SubmissionRepository, AttendanceRecordRepository=attendance_repo.AttendanceRecordRepository, ClassRepository=courses_repo.ClassRepository, EnrollmentRepository=courses_repo.EnrollmentRepository, GradeItemRepository=grades_repo.GradeItemRepository, GradeRuleRepository=grades_repo.GradeRuleRepository, UserRepository=users_repo.UserRepository)
 resource_service = _mod_resource_service(config=config, clock=clock, ids=ids, permissions=permissions, validators=validators, ForbiddenError=errors.ForbiddenError, NotFoundError=errors.NotFoundError, TooLargeError=errors.TooLargeError, safe_join=static_lib.safe_join, AuditRepository=audit_repo.AuditRepository, ResourceRepository=content_repo.ResourceRepository, ClassRepository=courses_repo.ClassRepository, CourseRepository=courses_repo.CourseRepository, EnrollmentRepository=courses_repo.EnrollmentRepository)
 discussion_service = _mod_discussion_service(permissions=permissions, validators=validators, ForbiddenError=errors.ForbiddenError, NotFoundError=errors.NotFoundError, AuditRepository=audit_repo.AuditRepository, DiscussionRepository=content_repo.DiscussionRepository, ReplyRepository=content_repo.ReplyRepository, ClassRepository=courses_repo.ClassRepository, CourseRepository=courses_repo.CourseRepository, EnrollmentRepository=courses_repo.EnrollmentRepository)
+chapter_service = _mod_chapter_service(clock=clock, permissions=permissions, validators=validators, ForbiddenError=errors.ForbiddenError, NotFoundError=errors.NotFoundError, ValidationError=errors.ValidationError, AssignmentRepository=assignments_repo.AssignmentRepository, AuditRepository=audit_repo.AuditRepository, ChapterRepository=chapters_repo.ChapterRepository, TaskProgressRepository=chapters_repo.TaskProgressRepository, TaskRepository=chapters_repo.TaskRepository, ResourceRepository=content_repo.ResourceRepository, ClassRepository=courses_repo.ClassRepository, CourseRepository=courses_repo.CourseRepository, EnrollmentRepository=courses_repo.EnrollmentRepository, QuizRepository=quizzes_repo.QuizRepository)
 statistics_service = _mod_statistics_service(clock=clock, permissions=permissions, connection=connection, AuditRepository=audit_repo.AuditRepository, ClassRepository=courses_repo.ClassRepository, CourseRepository=courses_repo.CourseRepository, EnrollmentRepository=courses_repo.EnrollmentRepository, UserRepository=users_repo.UserRepository)
 request_lib = _mod_request_lib(MAX_BODY_BYTES=config.MAX_BODY_BYTES, TooLargeError=errors.TooLargeError, ValidationError=errors.ValidationError, safe_int=ids.safe_int)
 router_lib = _mod_router_lib(MethodNotAllowedError=errors.MethodNotAllowedError, NotFoundError=errors.NotFoundError, Request=request_lib.Request, Response=response_lib.Response)
 multipart_lib = _mod_multipart_lib(ValidationError=errors.ValidationError)
 server_lib = _mod_server_lib(config=config, AppError=errors.AppError, TooLargeError=errors.TooLargeError, Request=request_lib.Request, build_request=request_lib.build_request, Response=response_lib.Response, error_response=response_lib.error_response, json_response=response_lib.json_response)
-seed_lib = _mod_seed_lib(config=config, clock=clock, ids=ids, security=security, connection=connection, migrations=migrations, AssignmentRepository=assignments_repo.AssignmentRepository, SubmissionRepository=assignments_repo.SubmissionRepository, AttendanceRecordRepository=attendance_repo.AttendanceRecordRepository, AttendanceSessionRepository=attendance_repo.AttendanceSessionRepository, DiscussionRepository=content_repo.DiscussionRepository, NotificationRepository=content_repo.NotificationRepository, ReplyRepository=content_repo.ReplyRepository, ResourceRepository=content_repo.ResourceRepository, ClassRepository=courses_repo.ClassRepository, CourseRepository=courses_repo.CourseRepository, EnrollmentRepository=courses_repo.EnrollmentRepository, GradeItemRepository=grades_repo.GradeItemRepository, GradeRuleRepository=grades_repo.GradeRuleRepository, AttemptRepository=quizzes_repo.AttemptRepository, QuestionRepository=quizzes_repo.QuestionRepository, QuizRepository=quizzes_repo.QuizRepository, UserRepository=users_repo.UserRepository)
+seed_lib = _mod_seed_lib(config=config, clock=clock, ids=ids, security=security, connection=connection, migrations=migrations, AssignmentRepository=assignments_repo.AssignmentRepository, SubmissionRepository=assignments_repo.SubmissionRepository, AttendanceRecordRepository=attendance_repo.AttendanceRecordRepository, AttendanceSessionRepository=attendance_repo.AttendanceSessionRepository, SettingRepository=audit_repo.SettingRepository, ChapterRepository=chapters_repo.ChapterRepository, TaskProgressRepository=chapters_repo.TaskProgressRepository, TaskRepository=chapters_repo.TaskRepository, DiscussionRepository=content_repo.DiscussionRepository, NotificationRepository=content_repo.NotificationRepository, ReplyRepository=content_repo.ReplyRepository, ResourceRepository=content_repo.ResourceRepository, ClassRepository=courses_repo.ClassRepository, CourseRepository=courses_repo.CourseRepository, EnrollmentRepository=courses_repo.EnrollmentRepository, GradeItemRepository=grades_repo.GradeItemRepository, GradeRuleRepository=grades_repo.GradeRuleRepository, AttemptRepository=quizzes_repo.AttemptRepository, QuestionRepository=quizzes_repo.QuestionRepository, QuizRepository=quizzes_repo.QuizRepository, UserRepository=users_repo.UserRepository)
 auth_api = _mod_auth_api(permissions=permissions, validators=validators, Response=response_lib.Response, ok=response_lib.ok, Router=router_lib.Router, auth_service=auth_service)
 user_api = _mod_user_api(permissions=permissions, validators=validators, Response=response_lib.Response, created=response_lib.created, ok=response_lib.ok, paginated=response_lib.paginated, Router=router_lib.Router, CourseRepository=courses_repo.CourseRepository, user_service=user_service)
 course_api = _mod_course_api(permissions=permissions, validators=validators, Response=response_lib.Response, created=response_lib.created, ok=response_lib.ok, paginated=response_lib.paginated, Router=router_lib.Router, course_service=course_service)
+chapter_api = _mod_chapter_api(permissions=permissions, Response=response_lib.Response, created=response_lib.created, ok=response_lib.ok, Router=router_lib.Router, chapter_service=chapter_service)
 assignment_api = _mod_assignment_api(permissions=permissions, validators=validators, Response=response_lib.Response, created=response_lib.created, ok=response_lib.ok, Router=router_lib.Router, multipart=multipart_lib, file_response=response_lib.file_response, assignment_service=assignment_service, attachment_service=attachment_service)
 quiz_api = _mod_quiz_api(permissions=permissions, validators=validators, Response=response_lib.Response, created=response_lib.created, ok=response_lib.ok, Router=router_lib.Router, quiz_service=quiz_service)
 attendance_api = _mod_attendance_api(permissions=permissions, validators=validators, Response=response_lib.Response, created=response_lib.created, ok=response_lib.ok, Router=router_lib.Router, attendance_service=attendance_service)
@@ -9841,7 +11217,7 @@ class Application:
         self.router = router_lib.Router()
         self.static = static_lib.StaticFiles(config.FRONTEND_DIST, spa_fallback=True)
         for module in (
-            auth_api, user_api, course_api, assignment_api, quiz_api,
+            auth_api, user_api, course_api, chapter_api, assignment_api, quiz_api,
             attendance_api, grade_api, content_api, report_api, system_api,
         ):
             self.router.include(module.router)
@@ -9998,8 +11374,7 @@ def cmd_info() -> int:
 def cmd_serve(host: str, port: int, open_browser: bool = False) -> int:
     config.ensure_dirs()
     migrations.init_db()
-    if not seed_lib.is_seeded():
-        seed_lib.seed()
+    seed_lib.seed()
     actual = find_free_port(host, port)
     server = server_lib.HttpServer(application.dispatch, host=host, port=actual).start()
     server.wait_ready()
@@ -10021,8 +11396,7 @@ def cmd_serve(host: str, port: int, open_browser: bool = False) -> int:
 def cmd_window(port: int, debug: bool = False) -> int:
     config.ensure_dirs()
     migrations.init_db()
-    if not seed_lib.is_seeded():
-        seed_lib.seed()
+    seed_lib.seed()
     enable_dpi_awareness()
     actual = find_free_port("127.0.0.1", port)
     server = server_lib.HttpServer(application.dispatch, host="127.0.0.1", port=actual).start()

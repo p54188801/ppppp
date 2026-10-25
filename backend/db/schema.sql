@@ -398,3 +398,55 @@ CREATE TABLE IF NOT EXISTS assignment_files (
 
 CREATE INDEX IF NOT EXISTS idx_assignment_files_owner
     ON assignment_files(assignment_id, student_id);
+
+-- ---------------------------------------------------------------------
+-- 章节任务点与学习进度
+-- ---------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS chapters (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    course_id   INTEGER NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+    title       TEXT    NOT NULL,
+    description TEXT    NOT NULL DEFAULT '',
+    order_no    INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT    NOT NULL,
+    updated_at  TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_chapters_course ON chapters(course_id, order_no);
+
+CREATE TABLE IF NOT EXISTS tasks (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    chapter_id    INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+    type          TEXT    NOT NULL DEFAULT 'material'
+                  CHECK (type IN ('material', 'assignment', 'quiz', 'discussion', 'text')),
+    title         TEXT    NOT NULL,
+    description   TEXT    NOT NULL DEFAULT '',
+    duration      INTEGER NOT NULL DEFAULT 0,   -- 预计学习时长（分钟）
+    required      INTEGER NOT NULL DEFAULT 1,   -- 是否必修任务点
+    resource_id   INTEGER REFERENCES resources(id) ON DELETE SET NULL,
+    quiz_id       INTEGER REFERENCES quizzes(id) ON DELETE SET NULL,
+    assignment_id INTEGER REFERENCES assignments(id) ON DELETE SET NULL,
+    order_no      INTEGER NOT NULL DEFAULT 0,
+    created_at    TEXT    NOT NULL,
+    updated_at    TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_chapter ON tasks(chapter_id, order_no);
+
+CREATE TABLE IF NOT EXISTS task_progress (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id     INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    student_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    status      TEXT    NOT NULL DEFAULT 'in_progress'
+                CHECK (status IN ('in_progress', 'completed')),
+    progress    INTEGER NOT NULL DEFAULT 0 CHECK (progress BETWEEN 0 AND 100),
+    started_at  TEXT,
+    finished_at TEXT,
+    created_at  TEXT    NOT NULL,
+    updated_at  TEXT    NOT NULL,
+    UNIQUE (task_id, student_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_progress_student ON task_progress(student_id);
+CREATE INDEX IF NOT EXISTS idx_task_progress_task    ON task_progress(task_id, status);

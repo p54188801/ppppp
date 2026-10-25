@@ -14,6 +14,9 @@ const data = ref(null)
 const pending = ref([])
 const openSessions = ref([])
 const notices = ref([])
+const learning = ref([])
+
+const learningCourses = computed(() => learning.value.filter((item) => item.task_count > 0))
 
 const trendMax = computed(() => {
   const trend = data.value?.trend || []
@@ -29,6 +32,7 @@ async function load() {
       openSessions.value = await api.get('/api/my/attendance/open')
       const inbox = await api.get('/api/notifications', { page_size: 3 })
       notices.value = inbox.items || []
+      learning.value = (await api.get('/api/my/learning')) || []
     }
   } catch (error) {
     ui.error(error.message)
@@ -266,6 +270,37 @@ onMounted(load)
           </div>
           <span class="badge green">进行中</span>
         </div>
+      </div>
+
+      <div class="card" style="margin-top: 16px">
+        <div class="card-title">
+          <span>课程学习进度</span>
+          <router-link class="small" :to="{ name: 'courses' }">全部课程</router-link>
+        </div>
+          <div v-if="!learningCourses.length" class="empty">
+            老师还没有发布章节任务点
+          </div>
+          <div
+            v-for="item in learningCourses"
+            :key="item.course_id"
+            style="padding: 9px 0; border-bottom: 1px solid var(--border)"
+          >
+            <div class="row between" style="gap: 10px">
+              <router-link
+                :to="{ name: 'course-detail', params: { id: item.course_id } }"
+                style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap"
+              >
+                {{ item.name }}
+              </router-link>
+              <span class="small mono">{{ item.progress }}%</span>
+            </div>
+            <div class="progress" style="margin-top: 6px">
+              <i :style="{ width: `${item.progress}%` }" />
+            </div>
+            <div class="faint small" style="margin-top: 4px">
+              {{ item.teacher_name || '教师待定' }} · 已完成 {{ item.completed_count }} / {{ item.task_count }} 个任务点
+            </div>
+          </div>
       </div>
 
       <div class="grid cols-2" style="margin-top: 16px">

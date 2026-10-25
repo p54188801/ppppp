@@ -1,8 +1,8 @@
 <script setup>
 /**
  * 课程详情页
- * 职责：展示课程基本信息与教学班列表，提供邀请码复制/加入、新建教学班、
- *       课程资料上传下载，以及课程讨论区（发帖 / 展开查看回复 / 回复）。
+ * 职责：展示课程基本信息、章节任务点与学习进度，并按标签页组织教学班、
+ *       公告、资料与讨论区；教师可维护章节/任务点，学生逐个完成并上报进度。
  */
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -17,6 +17,15 @@ const ui = useUiStore()
 
 const courseId = computed(() => Number(route.params.id))
 
+const tabs = [
+  { key: 'chapters', label: '章节' },
+  { key: 'classes', label: '教学班' },
+  { key: 'announcements', label: '公告' },
+  { key: 'resources', label: '资料' },
+  { key: 'discussions', label: '讨论' },
+]
+const activeTab = ref('chapters')
+
 const loading = ref(true)
 const course = ref(null)
 const resources = ref([])
@@ -26,6 +35,27 @@ const expandedAnn = ref({})
 const expanded = ref({})
 const replyDrafts = ref({})
 const replyingId = ref(0)
+
+// 章节与任务点
+const chapters = ref([])
+const chapterSummary = ref(null)
+const chapterOptions = ref({ assignments: [], quizzes: [] })
+const showChapter = ref(false)
+const editingChapterId = ref(0)
+const chapterForm = ref({ title: '', description: '' })
+const savingChapter = ref(false)
+const showTask = ref(false)
+const taskChapterId = ref(0)
+const editingTaskId = ref(0)
+const taskForm = ref(emptyTask())
+const savingTask = ref(false)
+const taskActingId = ref(0)
+const chapterActingId = ref(0)
+
+// 教师端学习进度面板
+const showProgress = ref(false)
+const loadingProgress = ref(false)
+const progressData = ref(null)
 
 const joinCode = ref('')
 const joining = ref(false)
@@ -53,24 +83,94 @@ const postingThread = ref(false)
 const canManage = computed(() => auth.canManageCourse(course.value))
 const classes = computed(() => course.value?.classes || [])
 
+const taskLinkOptions = computed(() => {
+  const type = taskForm.value.type
+  if (type === 'material') {
+    return resources.value.map((item) => ({ id: item.id, label: item.title }))
+  }
+  if (type === 'assignment') {
+    return chapterOptions.value.assignments.map((item) => ({
+      id: item.id,
+      label: `${item.title}（${item.class_name || '教学班'}）`,
+    }))
+  }
+  if (type === 'quiz') {
+    return chapterOptions.value.quizzes.map((item) => ({
+      id: item.id,
+      label: `${item.title}（${item.class_name || '教学班'}）`,
+    }))
+  }
+  return []
+})
+
+function emptyTask() {
+  return {
+    type: 'material',
+    title: '',
+    description: '',
+    duration: 30,
+    required: true,
+    link_id: '',
+  }
+}
+
 async function load() {
   loading.value = true
   try {
-    const [detail, resourceList, threadList, annList] = await Promise.all([
+    const [detail, resourceList, threadList, annList, chapterData] = await Promise.all([
       api.get(`/api/courses/${courseId.value}`),
       api.get(`/api/courses/${courseId.value}/resources`),
       api.get(`/api/courses/${courseId.value}/discussions`),
       api.get(`/api/courses/${courseId.value}/announcements`),
+      api.get(`/api/courses/${courseId.value}/chapters`),
     ])
     course.value = detail
     resources.value = resourceList || []
     threads.value = threadList || []
     announcements.value = annList || []
+    chapters.value = chapterData.items || []
+    chapterSummary.value = chapterData.summary || null
+    if (canManage.value) await loadChapterOptions()
   } catch (error) {
     ui.error(error.message)
   } finally {
     loading.value = false
   }
+}
+
+/** 教师建任务点时要选关联的作业/测验，按课程下每个教学班各拉一次再合并。 */
+async function loadChapterOptions() {
+  const courseClasses = course.value?.classes || []
+  if (!courseClasses.length) {
+    chapterOptions.value = { assignments: [], quizzes: [] }
+    return
+  }
+  try {
+    const groups = await Promise.all(
+      courseClasses.map(async (item) => {
+        const [assignmentList, quizList] = await Promise.all([
+          api.get(`/api/classes/${item.id}/assignments`),
+          api.get(`/api/classes/${item.id}/quizzes`),
+        ])
+        return {
+          assignments: assignmentList || [],
+          quizzes: quizList || [],
+        }
+      }),
+    )
+    chapterOptions.value = {
+      assignments: groups.flatMap((group) => group.assignments),
+      quizzes: groups.flatMap((group) => group.quizzes),
+    }
+  } catch {
+    chapterOptions.value = { assignments: [], quizzes: [] }
+  }
+}
+
+async function refreshChapters() {
+  const data = await api.get(`/api/courses/${courseId.value}/chapters`)
+  chapters.value = data.items || []
+  chapterSummary.value = data.summary || null
 }
 
 function openClass(id) {
@@ -193,6 +293,199 @@ function downloadResource(resource) {
   downloadFile(`/api/resources/${resource.id}/download`, resource.filename || resource.title)
 }
 
+/* ---------------------------------------------------------------- 章节 */
+
+function openChapterForm(item = null) {
+  editingChapterId.value = item ? item.id : 0
+  chapterForm.value = item
+    ? { title: item.title || '', description: item.description || '' }
+    : { title: '', description: '' }
+  showChapter.value = true
+}
+
+async function submitChapter() {
+  const title = chapterForm.value.title.trim()
+  if (title.length < 2) {
+    ui.error('章节标题至少需要 2 个字符')
+    return
+  }
+  savingChapter.value = true
+  try {
+    const payload = {
+      title,
+      description: chapterForm.value.description.trim(),
+    }
+    if (editingChapterId.value) {
+      await api.put(`/api/chapters/${editingChapterId.value}`, payload)
+      ui.success('章节已更新')
+    } else {
+      await api.post(`/api/courses/${courseId.value}/chapters`, payload)
+      ui.success('章节已创建')
+    }
+    showChapter.value = false
+    await refreshChapters()
+  } catch (error) {
+    ui.error(error.message)
+  } finally {
+    savingChapter.value = false
+  }
+}
+
+async function deleteChapter(item) {
+  const ok = await ui.confirm({
+    title: '删除章节',
+    message: `确定删除「${item.title}」吗？章节下的任务点与学习进度会一并删除。`,
+    confirmText: '删除',
+    danger: true,
+  })
+  if (!ok) return
+  chapterActingId.value = item.id
+  try {
+    await api.del(`/api/chapters/${item.id}`)
+    ui.success('章节已删除')
+    await refreshChapters()
+  } catch (error) {
+    ui.error(error.message)
+  } finally {
+    chapterActingId.value = 0
+  }
+}
+
+function openTaskForm(chapter, task = null) {
+  taskChapterId.value = chapter.id
+  editingTaskId.value = task ? task.id : 0
+  if (task) {
+    taskForm.value = {
+      type: task.type,
+      title: task.title || '',
+      description: task.description || '',
+      duration: Number(task.duration) || 0,
+      required: Boolean(task.required),
+      link_id: task.resource_id || task.assignment_id || task.quiz_id || '',
+    }
+  } else {
+    taskForm.value = emptyTask()
+  }
+  showTask.value = true
+}
+
+function onTaskTypeChange() {
+  taskForm.value.link_id = ''
+}
+
+async function submitTask() {
+  const title = taskForm.value.title.trim()
+  if (title.length < 2) {
+    ui.error('任务点标题至少需要 2 个字符')
+    return
+  }
+  savingTask.value = true
+  try {
+    const payload = {
+      type: taskForm.value.type,
+      title,
+      description: taskForm.value.description.trim(),
+      duration: Number(taskForm.value.duration) || 0,
+      required: Boolean(taskForm.value.required),
+    }
+    const linkId = Number(taskForm.value.link_id) || null
+    if (taskForm.value.type === 'material') payload.resource_id = linkId
+    if (taskForm.value.type === 'assignment') payload.assignment_id = linkId
+    if (taskForm.value.type === 'quiz') payload.quiz_id = linkId
+
+    if (editingTaskId.value) {
+      await api.put(`/api/tasks/${editingTaskId.value}`, payload)
+      ui.success('任务点已更新')
+    } else {
+      await api.post(`/api/chapters/${taskChapterId.value}/tasks`, payload)
+      ui.success('任务点已创建')
+    }
+    showTask.value = false
+    await refreshChapters()
+  } catch (error) {
+    ui.error(error.message)
+  } finally {
+    savingTask.value = false
+  }
+}
+
+async function deleteTask(task) {
+  const ok = await ui.confirm({
+    title: '删除任务点',
+    message: `确定删除任务点「${task.title}」吗？学生的完成记录也会被删除。`,
+    confirmText: '删除',
+    danger: true,
+  })
+  if (!ok) return
+  taskActingId.value = task.id
+  try {
+    await api.del(`/api/tasks/${task.id}`)
+    ui.success('任务点已删除')
+    await refreshChapters()
+  } catch (error) {
+    ui.error(error.message)
+  } finally {
+    taskActingId.value = 0
+  }
+}
+
+async function startTask(task) {
+  await reportTask(task, { status: 'in_progress' })
+}
+
+async function completeTask(task) {
+  await reportTask(task, { progress: 100 })
+}
+
+async function reportTask(task, payload) {
+  taskActingId.value = task.id
+  try {
+    await api.post(`/api/tasks/${task.id}/progress`, payload)
+    await refreshChapters()
+    ui.success(payload.progress === 100 ? '任务点已完成' : '已开始学习')
+  } catch (error) {
+    ui.error(error.message)
+  } finally {
+    taskActingId.value = 0
+  }
+}
+
+function openAssignment(task) {
+  if (task.assignment_id) {
+    router.push({ name: 'assignment-detail', params: { id: task.assignment_id } })
+  }
+}
+
+function openQuiz(task) {
+  if (task.quiz_id && auth.isStudent) {
+    router.push({ name: 'quiz-take', params: { id: task.quiz_id } })
+  }
+}
+
+function taskTypeBadge(type) {
+  if (type === 'assignment') return 'purple'
+  if (type === 'quiz') return 'yellow'
+  if (type === 'discussion') return 'gray'
+  if (type === 'material') return 'blue'
+  return 'gray'
+}
+
+async function openProgress() {
+  showProgress.value = true
+  loadingProgress.value = true
+  progressData.value = null
+  try {
+    progressData.value = await api.get(`/api/courses/${courseId.value}/progress`)
+  } catch (error) {
+    ui.error(error.message)
+    showProgress.value = false
+  } finally {
+    loadingProgress.value = false
+  }
+}
+
+/* ---------------------------------------------------------------- 资料 */
+
 function onFileChange(event) {
   const files = event.target.files
   uploadFile.value = files && files.length ? files[0] : null
@@ -230,6 +523,8 @@ async function submitUpload() {
     uploading.value = false
   }
 }
+
+/* ---------------------------------------------------------------- 讨论 */
 
 async function toggleThread(thread) {
   if (expanded.value[thread.id]) {
@@ -434,6 +729,8 @@ onMounted(load)
           {{ course.description || '该课程还没有填写简介。' }}
         </p>
         <div class="row wrap small faint" style="gap: 18px">
+          <span>章节 {{ chapterSummary ? chapterSummary.chapter_count : 0 }} 个</span>
+          <span>任务点 {{ chapterSummary ? chapterSummary.task_count : 0 }} 个</span>
           <span>教学班 {{ classes.length }} 个</span>
           <span>学生 {{ course.student_count || 0 }} 人</span>
           <span>公告 {{ announcements.length }} 条</span>
@@ -442,60 +739,255 @@ onMounted(load)
         </div>
       </div>
 
-      <!-- 学生加入 -->
-      <div v-if="auth.isStudent" class="card">
-        <div class="card-title"><span>加入教学班</span></div>
-        <div class="row wrap">
-          <input
-            v-model="joinCode"
-            class="input mono"
-            style="width: 220px"
-            placeholder="输入 6 位邀请码"
-            maxlength="12"
-            @keyup.enter="joinClass"
-          />
-          <button class="btn primary" :disabled="joining" @click="joinClass">
-            {{ joining ? '加入中…' : '加入' }}
-          </button>
-          <span class="small faint">向任课教师索取教学班邀请码</span>
+      <div class="tabs">
+        <div
+          v-for="tab in tabs"
+          :key="tab.key"
+          class="tab"
+          :class="{ active: activeTab === tab.key }"
+          @click="activeTab = tab.key"
+        >
+          {{ tab.label }}
+          <span
+            v-if="tab.key === 'chapters' && chapterSummary"
+            class="badge gray"
+            style="margin-left: 6px"
+          >
+            {{ chapterSummary.task_count }}
+          </span>
         </div>
       </div>
 
-      <!-- 教学班 -->
-      <div class="card">
-        <div class="card-title">
-          <span>教学班</span>
-          <span class="faint small">点击卡片进入班级空间</span>
-        </div>
-        <div v-if="!classes.length" class="empty">还没有教学班</div>
-        <div v-else class="grid cols-3">
-          <div
-            v-for="item in classes"
-            :key="item.id"
-            class="card"
-            style="margin-top: 0; background: var(--surface-2); cursor: pointer"
-            @click="openClass(item.id)"
-          >
-            <div class="row between">
-              <strong>{{ item.name }}</strong>
-              <span class="badge blue">{{ item.student_count || 0 }} / {{ item.capacity || 60 }} 人</span>
+      <!-- ================= 章节任务点 ================= -->
+      <template v-if="activeTab === 'chapters'">
+        <div class="card">
+          <div class="card-title">
+            <span>{{ auth.isStudent ? '我的学习进度' : '学习进度' }}</span>
+            <div v-if="canManage" class="row" style="gap: 6px">
+              <button class="btn sm ghost" @click="openProgress">完成明细</button>
+              <button class="btn sm primary" @click="openChapterForm()">新建章节</button>
             </div>
-            <div class="row between small muted" style="margin-top: 10px">
-              <span>地点：{{ item.location || '待定' }}</span>
-              <span>{{ item.schedule || '时间待定' }}</span>
-            </div>
-            <div class="row between" style="margin-top: 12px">
-              <span class="small faint">邀请码</span>
-              <span class="badge gray mono" style="cursor: copy" @click.stop="copyCode(item.join_code)">
-                {{ item.join_code }} ⧉
+          </div>
+          <template v-if="chapterSummary && chapterSummary.task_count">
+            <div class="row between small" style="margin-bottom: 6px">
+              <span class="muted">
+                <template v-if="auth.isStudent">
+                  {{ chapterSummary.completed_count }} / {{ chapterSummary.task_count }} 个任务点已完成
+                </template>
+                <template v-else>
+                  {{ chapterSummary.student_count }} 名学生 · {{ chapterSummary.task_count }} 个任务点 ·
+                  已完成 {{ chapterSummary.completed_count }} 人次
+                </template>
               </span>
+              <span class="mono">{{ chapterSummary.progress }}%</span>
+            </div>
+            <div class="progress">
+              <i :style="{ width: `${chapterSummary.progress}%` }" />
+            </div>
+          </template>
+          <div v-else class="empty">
+            {{ canManage ? '还没有章节，点击右上角「新建章节」开始搭建课程内容。' : '老师还没有发布章节内容。' }}
+          </div>
+        </div>
+
+        <div v-if="!chapters.length && canManage" class="card">
+          <div class="empty">章节为空，先建一个「第 1 章」吧。</div>
+        </div>
+
+        <div v-for="chapter in chapters" :key="chapter.id" class="card">
+          <div class="card-title" style="align-items: flex-start">
+            <div style="min-width: 0">
+              <div class="row wrap" style="gap: 8px">
+                <span class="badge blue"># {{ chapter.order_no }}</span>
+                <strong>{{ chapter.title }}</strong>
+                <span class="faint small">{{ chapter.task_count }} 个任务点</span>
+              </div>
+              <div v-if="chapter.description" class="small muted" style="margin-top: 4px">
+                {{ chapter.description }}
+              </div>
+            </div>
+            <div class="row" style="gap: 6px">
+              <span v-if="chapter.task_count" class="badge" :class="chapter.progress >= 100 ? 'green' : 'gray'">
+                {{ chapter.progress }}%
+              </span>
+              <button v-if="canManage" class="btn sm ghost" @click="openChapterForm(chapter)">编辑</button>
+              <button
+                v-if="canManage"
+                class="btn sm danger"
+                :disabled="chapterActingId === chapter.id"
+                @click="deleteChapter(chapter)"
+              >
+                {{ chapterActingId === chapter.id ? '删除中…' : '删除' }}
+              </button>
+              <button v-if="canManage" class="btn sm" @click="openTaskForm(chapter)">＋ 任务点</button>
+            </div>
+          </div>
+
+          <div v-if="chapter.task_count" class="progress" style="margin-bottom: 4px">
+            <i :style="{ width: `${chapter.progress}%` }" />
+          </div>
+
+          <div v-if="!chapter.tasks.length" class="empty" style="padding: 18px">
+            {{ canManage ? '该章节还没有任务点。' : '该章节暂无内容。' }}
+          </div>
+
+          <div
+            v-for="task in chapter.tasks"
+            :key="task.id"
+            style="padding: 12px 0; border-bottom: 1px solid var(--border)"
+          >
+            <div class="row between" style="gap: 12px; align-items: flex-start">
+              <div style="min-width: 0; flex: 1">
+                <div class="row wrap" style="gap: 6px">
+                  <span class="badge" :class="taskTypeBadge(task.type)">{{ task.type_label }}</span>
+                  <strong>{{ task.title }}</strong>
+                  <span v-if="!task.required" class="badge gray">选做</span>
+                  <span v-if="task.duration" class="faint small">约 {{ task.duration }} 分钟</span>
+                </div>
+                <div v-if="task.description" class="small muted" style="margin-top: 4px">
+                  {{ task.description }}
+                </div>
+
+                <div v-if="auth.isStudent" class="row wrap" style="gap: 8px; margin-top: 8px">
+                  <div class="progress" style="width: 160px">
+                    <i :style="{ width: `${task.progress || 0}%` }" />
+                  </div>
+                  <span class="small faint mono">{{ task.progress || 0 }}%</span>
+                  <span v-if="task.completed" class="badge green">已完成</span>
+                  <span v-else-if="task.my_progress" class="badge yellow">进行中</span>
+                  <span v-else class="badge gray">未开始</span>
+                </div>
+
+                <div v-else class="row wrap" style="gap: 8px; margin-top: 8px">
+                  <div class="progress" style="width: 160px">
+                    <i :style="{ width: `${task.progress || 0}%` }" />
+                  </div>
+                  <span class="small faint">
+                    {{ task.completed_count || 0 }} / {{ task.student_count || 0 }} 人完成
+                  </span>
+                </div>
+              </div>
+
+              <div class="row" style="gap: 6px; flex-shrink: 0">
+                <button
+                  v-if="task.type === 'material' && task.resource_id"
+                  class="btn sm ghost"
+                  @click="downloadResource({ id: task.resource_id, title: task.resource_title, filename: task.resource_filename })"
+                >
+                  查看资料
+                </button>
+                <button
+                  v-if="task.type === 'assignment' && task.assignment_id"
+                  class="btn sm ghost"
+                  @click="openAssignment(task)"
+                >
+                  去作业
+                </button>
+                <button
+                  v-if="task.type === 'quiz' && task.quiz_id && auth.isStudent"
+                  class="btn sm ghost"
+                  @click="openQuiz(task)"
+                >
+                  去测验
+                </button>
+                <button
+                  v-if="task.type === 'discussion'"
+                  class="btn sm ghost"
+                  @click="activeTab = 'discussions'"
+                >
+                  去讨论
+                </button>
+
+                <template v-if="auth.isStudent">
+                  <button
+                    v-if="!task.my_progress"
+                    class="btn sm"
+                    :disabled="taskActingId === task.id"
+                    @click="startTask(task)"
+                  >
+                    开始学习
+                  </button>
+                  <button
+                    v-else-if="!task.completed"
+                    class="btn sm primary"
+                    :disabled="taskActingId === task.id"
+                    @click="completeTask(task)"
+                  >
+                    {{ taskActingId === task.id ? '保存中…' : '标记完成' }}
+                  </button>
+                  <span v-else class="small" style="color: var(--success)">✓</span>
+                </template>
+                <template v-else-if="canManage">
+                  <button class="btn sm ghost" @click="openTaskForm(chapter, task)">编辑</button>
+                  <button
+                    class="btn sm danger"
+                    :disabled="taskActingId === task.id"
+                    @click="deleteTask(task)"
+                  >
+                    删除
+                  </button>
+                </template>
+              </div>
             </div>
           </div>
         </div>
-      </div>
+      </template>
 
-      <!-- 课程公告 -->
-      <div class="card">
+      <!-- ================= 教学班 ================= -->
+      <template v-if="activeTab === 'classes'">
+        <div v-if="auth.isStudent" class="card">
+          <div class="card-title"><span>加入教学班</span></div>
+          <div class="row wrap">
+            <input
+              v-model="joinCode"
+              class="input mono"
+              style="width: 220px"
+              placeholder="输入 6 位邀请码"
+              maxlength="12"
+              @keyup.enter="joinClass"
+            />
+            <button class="btn primary" :disabled="joining" @click="joinClass">
+              {{ joining ? '加入中…' : '加入' }}
+            </button>
+            <span class="small faint">向任课教师索取教学班邀请码</span>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">
+            <span>教学班</span>
+            <span class="faint small">点击卡片进入班级空间</span>
+          </div>
+          <div v-if="!classes.length" class="empty">还没有教学班</div>
+          <div v-else class="grid cols-3">
+            <div
+              v-for="item in classes"
+              :key="item.id"
+              class="card"
+              style="margin-top: 0; background: var(--surface-2); cursor: pointer"
+              @click="openClass(item.id)"
+            >
+              <div class="row between">
+                <strong>{{ item.name }}</strong>
+                <span class="badge blue">{{ item.student_count || 0 }} / {{ item.capacity || 60 }} 人</span>
+              </div>
+              <div class="row between small muted" style="margin-top: 10px">
+                <span>地点：{{ item.location || '待定' }}</span>
+                <span>{{ item.schedule || '时间待定' }}</span>
+              </div>
+              <div class="row between" style="margin-top: 12px">
+                <span class="small faint">邀请码</span>
+                <span class="badge gray mono" style="cursor: copy" @click.stop="copyCode(item.join_code)">
+                  {{ item.join_code }} ⧉
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <!-- ================= 课程公告 ================= -->
+      <div v-if="activeTab === 'announcements'" class="card">
         <div class="card-title">
           <span>课程公告</span>
           <button v-if="canManage" class="btn sm primary" @click="openAnnForm()">发布公告</button>
@@ -543,8 +1035,8 @@ onMounted(load)
         </div>
       </div>
 
-      <!-- 课程资料 -->
-      <div class="card">
+      <!-- ================= 课程资料 ================= -->
+      <div v-if="activeTab === 'resources'" class="card">
         <div class="card-title">
           <span>课程资料</span>
           <button v-if="canManage" class="btn sm" @click="openUpload">上传资料</button>
@@ -581,8 +1073,8 @@ onMounted(load)
         </div>
       </div>
 
-      <!-- 讨论区 -->
-      <div class="card">
+      <!-- ================= 讨论区 ================= -->
+      <div v-if="activeTab === 'discussions'" class="card">
         <div class="card-title">
           <span>讨论区</span>
           <button class="btn sm" @click="openThreadForm">发起讨论</button>
@@ -684,6 +1176,164 @@ onMounted(load)
           </button>
         </div>
       </form>
+    </div>
+
+    <!-- 新建 / 编辑章节 -->
+    <div v-if="showChapter" class="modal-mask" @click.self="showChapter = false">
+      <form class="modal" @submit.prevent="submitChapter">
+        <div class="modal-head">
+          <h3>{{ editingChapterId ? '编辑章节' : '新建章节' }}</h3>
+          <button type="button" class="btn ghost sm" @click="showChapter = false">✕</button>
+        </div>
+        <div class="field">
+          <label>章节标题</label>
+          <input v-model="chapterForm.title" class="input" placeholder="如 第 1 章 绪论" maxlength="120" />
+        </div>
+        <div class="field">
+          <label>章节说明</label>
+          <textarea v-model="chapterForm.description" class="textarea" placeholder="本章的学习目标、重点（选填）" maxlength="2000" />
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn" @click="showChapter = false">取消</button>
+          <button type="submit" class="btn primary" :disabled="savingChapter">
+            {{ savingChapter ? '保存中…' : editingChapterId ? '保存修改' : '创建章节' }}
+          </button>
+        </div>
+      </form>
+    </div>
+
+    <!-- 新建 / 编辑任务点 -->
+    <div v-if="showTask" class="modal-mask" @click.self="showTask = false">
+      <form class="modal" @submit.prevent="submitTask">
+        <div class="modal-head">
+          <h3>{{ editingTaskId ? '编辑任务点' : '新建任务点' }}</h3>
+          <button type="button" class="btn ghost sm" @click="showTask = false">✕</button>
+        </div>
+        <div class="form-row">
+          <div class="field">
+            <label>任务点类型</label>
+            <select v-model="taskForm.type" class="select" @change="onTaskTypeChange">
+              <option value="material">资料</option>
+              <option value="assignment">作业</option>
+              <option value="quiz">测验</option>
+              <option value="discussion">讨论</option>
+              <option value="text">图文</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>预计时长（分钟）</label>
+            <input v-model="taskForm.duration" class="input" type="number" min="0" max="600" />
+          </div>
+        </div>
+        <div class="field">
+          <label>任务点标题</label>
+          <input v-model="taskForm.title" class="input" placeholder="如 阅读课程大纲 / 完成第一次上机" maxlength="120" />
+        </div>
+        <div v-if="['material', 'assignment', 'quiz'].includes(taskForm.type)" class="field">
+          <label>关联内容</label>
+          <select v-model="taskForm.link_id" class="select">
+            <option value="">不关联</option>
+            <option v-for="option in taskLinkOptions" :key="option.id" :value="option.id">
+              {{ option.label }}
+            </option>
+          </select>
+          <div v-if="!taskLinkOptions.length" class="hint">
+            暂无可选内容，可先在「资料 / 教学班」里创建，或先建一个纯图文任务点。
+          </div>
+        </div>
+        <div class="field">
+          <label>任务说明</label>
+          <textarea v-model="taskForm.description" class="textarea" placeholder="学生需要做什么（选填）" maxlength="2000" />
+        </div>
+        <div class="field">
+          <label style="display: flex; align-items: center; gap: 8px; cursor: pointer">
+            <input v-model="taskForm.required" type="checkbox" style="width: auto" />
+            <span>设为必修任务点（计入进度）</span>
+          </label>
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn" @click="showTask = false">取消</button>
+          <button type="submit" class="btn primary" :disabled="savingTask">
+            {{ savingTask ? '保存中…' : editingTaskId ? '保存修改' : '创建任务点' }}
+          </button>
+        </div>
+      </form>
+    </div>
+
+    <!-- 教师端：任务点完成明细 -->
+    <div v-if="showProgress" class="modal-mask" @click.self="showProgress = false">
+      <div class="modal" style="width: min(920px, 94vw); max-height: 86vh; overflow: auto">
+        <div class="modal-head">
+          <h3>学习进度明细</h3>
+          <button type="button" class="btn ghost sm" @click="showProgress = false">✕</button>
+        </div>
+        <div v-if="loadingProgress" class="loading">正在统计…</div>
+        <template v-else-if="progressData">
+          <div class="grid cols-3" style="margin-bottom: 16px">
+            <div class="stat">
+              <div class="stat-label">任务点</div>
+              <div class="stat-value">{{ progressData.task_count }}</div>
+            </div>
+            <div class="stat">
+              <div class="stat-label">平均完成度</div>
+              <div class="stat-value">{{ progressData.summary.avg_progress }}%</div>
+            </div>
+            <div class="stat">
+              <div class="stat-label">全部完成</div>
+              <div class="stat-value">
+                {{ progressData.summary.completed_students }} / {{ progressData.summary.student_count }}
+              </div>
+            </div>
+          </div>
+
+          <div class="card-title" style="margin-top: 0"><span>按章节</span></div>
+          <div class="table-wrap" style="margin-bottom: 16px">
+            <table>
+              <thead>
+                <tr><th>章节</th><th>任务点</th><th>完成率</th><th>全部完成人数</th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="item in progressData.chapters" :key="item.id">
+                  <td>{{ item.title }}</td>
+                  <td>{{ item.task_count }}</td>
+                  <td style="min-width: 140px">
+                    <div class="row" style="gap: 8px">
+                      <div class="progress" style="flex: 1"><i :style="{ width: `${item.progress}%` }" /></div>
+                      <span class="small mono">{{ item.progress }}%</span>
+                    </div>
+                  </td>
+                  <td>{{ item.completed_students }} 人</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="card-title"><span>按学生</span></div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>学号</th><th>姓名</th><th>教学班</th><th>已完成</th><th>完成度</th><th>最近学习</th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="item in progressData.students" :key="item.student_id">
+                  <td class="mono small">{{ item.number || '—' }}</td>
+                  <td>{{ item.real_name }}</td>
+                  <td class="small muted">{{ item.class_name || '—' }}</td>
+                  <td class="small">{{ item.completed_count }} / {{ item.task_count }}</td>
+                  <td style="min-width: 150px">
+                    <div class="row" style="gap: 8px">
+                      <div class="progress" style="flex: 1"><i :style="{ width: `${item.progress}%` }" /></div>
+                      <span class="small mono">{{ item.progress }}%</span>
+                    </div>
+                  </td>
+                  <td class="small faint">{{ item.last_active_at ? relativeTime(item.last_active_at) : '—' }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div v-if="!progressData.students.length" class="empty">还没有学生加入教学班</div>
+        </template>
+      </div>
     </div>
 
     <!-- 上传资料 -->

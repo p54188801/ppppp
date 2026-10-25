@@ -1,7 +1,7 @@
 # EduFlow 功能路线图（对照学习通）
 
 > 目标：把学习通的核心能力逐项补齐。每项按「迁移 → 仓储 → 服务 → 接口 → 前端 → 测试」六步落地，
-> 每完成一项跑一次全量回归（当前 104 项），不允许把已有功能改坏。
+> 每完成一项跑一次全量回归（当前 139 项），不允许把已有功能改坏。
 
 ## 一、现状对照
 
@@ -18,7 +18,7 @@
 | 成绩权重 / 绩点 / 导出 | ✅ 已有 | 权重可配、CSV 导出、排名 |
 | 数据备份 | ✅ 已有 | 在线快照、下载、恢复 |
 | 全局搜索 | ✅ 已有 | 课程/作业/资料/讨论/公告 |
-| **章节任务点 + 学习进度** | ❌ 缺 | 学习通最核心的形态 |
+| **章节任务点 + 学习进度** | ✅ 已有 | 章节树、5 类任务点、学生进度、教师完成率 |
 | **待办中心** | ❌ 缺 | 聚合未交作业 / 待签到 / 临近截止 |
 | **课堂互动**（投票/抢答/随机点名） | ❌ 缺 | 课堂高频功能 |
 | **作业互评** | ❌ 缺 | 随机分配 + 匿名 + 教师复核 |
@@ -33,16 +33,20 @@
 ## 二、实施顺序
 
 ### 第一批：核心教学闭环
-1. **章节任务点 + 学习进度**
-   - 表：`chapters(id, course_id, title, order_no)`、`tasks(id, chapter_id, type, title, resource_id, quiz_id, assignment_id, duration)`
-   - 表：`task_progress(id, task_id, student_id, status, progress, started_at, finished_at)`
-   - 接口：章节 CRUD、任务 CRUD、学生上报进度、教师看完成率
-   - 前端：课程详情新增「章节」标签页，学生逐个完成任务点并显示进度条
+
+1. ✅ **章节任务点 + 学习进度**（2026-10-25 完成）
+   - 表：`chapters(id, course_id, title, order_no)`、`tasks(id, chapter_id, type, title, resource_id, quiz_id, assignment_id, duration)`、
+     `task_progress(id, task_id, student_id, status, progress, started_at, finished_at)`
+   - 接口：章节 CRUD、任务 CRUD、学生上报进度、教师看完成率、我的学习进度
+   - 前端：课程详情「章节」标签页，学生逐个完成任务点并显示进度条；教师看完成明细
+   - 测试：`tests/test_chapters.py` 30 项 + 冒烟 5 项
+
 2. **待办中心**
-   - 聚合：未交作业 + 进行中签到 + 临近截止测验
+   - 聚合：未交作业 + 进行中签到 + 临近截止测验 + 未完成任务点
    - 接口 `GET /api/my/todos`，首页展示
 
 ### 第二批：课堂互动
+
 3. **投票 / 抢答 / 随机点名**
    - 表：`interactions(id, class_id, type, question, options_json, status, created_at)`、`interaction_responses(...)`
    - 教师发起、学生实时作答、教师端实时统计
@@ -68,10 +72,12 @@
 ## 四、当前基线
 
 ```
-f6af052  feat: 作业附件上传与下载（含越权校验）
-24aa7cd  docs: 新增 NEXT_STEPS 交接文档
-0ab1033  test: 新增边界与并发自测（15 项）
-df23b86  feat: 补齐课程公告、全局搜索、数据备份，并修复滚动问题
+<本次>  feat: 章节任务点与学习进度（后端 + 前端 + 测试）
+f8afac7 docs: 新增功能路线图（对照学习通的模块清单与实施顺序）
+f6af052 feat: 作业附件上传与下载（含越权校验）
+24aa7cd docs: 新增 NEXT_STEPS 交接文档
+0ab1033 test: 新增边界与并发自测（15 项）
 ```
 
-接口 106 条 · 单元 36 + 冒烟 34 + 新功能 19 + 边界 15 = 104 项测试全过
+接口 116 条 · 单元 36 + 冒烟 39 + 新功能 19 + 边界 15 + 章节 30 = 139 项测试全过
+· UI 巡检 26 页 0 控制台错误 · schema v4（26 张表）

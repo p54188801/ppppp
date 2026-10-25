@@ -15,7 +15,7 @@ from backend.core import clock
 from backend.db import connection
 
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
-CURRENT_VERSION = 3
+CURRENT_VERSION = 4
 
 
 def _read_schema() -> str:
@@ -74,10 +74,63 @@ def _migrate_v3(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_v4(conn: sqlite3.Connection) -> None:
+    """v3 -> v4：新增章节、任务点与学习进度表（幂等）。"""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS chapters (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            course_id   INTEGER NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+            title       TEXT    NOT NULL,
+            description TEXT    NOT NULL DEFAULT '',
+            order_no    INTEGER NOT NULL DEFAULT 0,
+            created_at  TEXT    NOT NULL,
+            updated_at  TEXT    NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_chapters_course ON chapters(course_id, order_no);
+
+        CREATE TABLE IF NOT EXISTS tasks (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            chapter_id    INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+            type          TEXT    NOT NULL DEFAULT 'material'
+                          CHECK (type IN ('material', 'assignment', 'quiz', 'discussion', 'text')),
+            title         TEXT    NOT NULL,
+            description   TEXT    NOT NULL DEFAULT '',
+            duration      INTEGER NOT NULL DEFAULT 0,
+            required      INTEGER NOT NULL DEFAULT 1,
+            resource_id   INTEGER REFERENCES resources(id) ON DELETE SET NULL,
+            quiz_id       INTEGER REFERENCES quizzes(id) ON DELETE SET NULL,
+            assignment_id INTEGER REFERENCES assignments(id) ON DELETE SET NULL,
+            order_no      INTEGER NOT NULL DEFAULT 0,
+            created_at    TEXT    NOT NULL,
+            updated_at    TEXT    NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_tasks_chapter ON tasks(chapter_id, order_no);
+
+        CREATE TABLE IF NOT EXISTS task_progress (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id     INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+            student_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            status      TEXT    NOT NULL DEFAULT 'in_progress'
+                        CHECK (status IN ('in_progress', 'completed')),
+            progress    INTEGER NOT NULL DEFAULT 0 CHECK (progress BETWEEN 0 AND 100),
+            started_at  TEXT,
+            finished_at TEXT,
+            created_at  TEXT    NOT NULL,
+            updated_at  TEXT    NOT NULL,
+            UNIQUE (task_id, student_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_task_progress_student ON task_progress(student_id);
+        CREATE INDEX IF NOT EXISTS idx_task_progress_task    ON task_progress(task_id, status);
+        """
+    )
+
+
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
     (3, _migrate_v3),
+    (4, _migrate_v4),
 ]
 
 
@@ -140,6 +193,9 @@ def reset_db() -> None:
         "discussions",
         "announcements",
         "assignment_files",
+        "task_progress",
+        "tasks",
+        "chapters",
         "notifications",
         "grade_items",
         "grade_rules",
