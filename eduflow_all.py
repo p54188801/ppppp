@@ -436,7 +436,24 @@ CREATE TABLE IF NOT EXISTS announcements (
     updated_at TEXT    NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_announcements_course ON announcements(course_id);"""
+CREATE INDEX IF NOT EXISTS idx_announcements_course ON announcements(course_id);
+-- ---------------------------------------------------------------------
+-- 作业附件（学生提交时上传的文件）
+-- ---------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS assignment_files (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    assignment_id INTEGER NOT NULL REFERENCES assignments(id) ON DELETE CASCADE,
+    student_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    filename      TEXT    NOT NULL,
+    stored_name   TEXT    NOT NULL UNIQUE,
+    size          INTEGER NOT NULL DEFAULT 0,
+    mime          TEXT,
+    created_at    TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_assignment_files_owner
+    ON assignment_files(assignment_id, student_id);"""
 
 
 # ======================================================================
@@ -2050,7 +2067,7 @@ def _mod_migrations(clock, config, connection):
 
 
     SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
-    CURRENT_VERSION = 2
+    CURRENT_VERSION = 3
 
 
     def _read_schema() -> str:
@@ -2089,9 +2106,30 @@ def _mod_migrations(clock, config, connection):
         )
 
 
+    def _migrate_v3(conn: sqlite3.Connection) -> None:
+        """v2 -> v3：新增作业附件表（幂等）。"""
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS assignment_files (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                assignment_id INTEGER NOT NULL REFERENCES assignments(id) ON DELETE CASCADE,
+                student_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                filename      TEXT    NOT NULL,
+                stored_name   TEXT    NOT NULL UNIQUE,
+                size          INTEGER NOT NULL DEFAULT 0,
+                mime          TEXT,
+                created_at    TEXT    NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_assignment_files_owner
+                ON assignment_files(assignment_id, student_id);
+            """
+        )
+
+
     MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
         (1, _migrate_v1),
         (2, _migrate_v2),
+        (3, _migrate_v3),
     ]
 
 
@@ -2153,6 +2191,7 @@ def _mod_migrations(clock, config, connection):
             "discussion_replies",
             "discussions",
             "announcements",
+            "assignment_files",
             "notifications",
             "grade_items",
             "grade_rules",
@@ -4654,6 +4693,144 @@ def _mod_announcement_service(AnnouncementRepository, AuditRepository, ClassRepo
         create=create,
         update=update,
         delete=delete,
+    )
+
+
+# ======================================================================
+# 模块：backend/services/attachment_service.py
+# ======================================================================
+def _mod_attachment_service(AuditRepository, ClassRepository, EnrollmentRepository, ForbiddenError, NotFoundError, TooLargeError, clock, config, connection, ids, permissions, safe_join, validators):
+    """作业附件：学生上传、按权限下载。
+
+    文件落在 data/uploads，文件名加随机前缀防冲突；数据库只存元信息。
+    下载权限：上传者本人 / 该教学班任课教师 / 管理员。
+    """
+
+
+    import mimetypes
+    import os
+    from pathlib import Path
+    from typing import Any
+
+
+    audit_repo = AuditRepository()
+    class_repo = ClassRepository()
+    enroll_repo = EnrollmentRepository()
+
+    MAX_FILES = 5
+
+
+    def _sanitize(filename: str) -> str:
+        name = os.path.basename((filename or "file").replace("\\", "/"))
+        name = "".join(ch for ch in name if ch.isprintable() and ch not in '<>:"|?*').strip(". ")
+        return (name or "file")[:120]
+
+
+    def list_for(assignment_id: int, student_id: int) -> list[dict[str, Any]]:
+        return connection.query_all(
+            """SELECT id, filename, stored_name, size, mime, created_at
+                 FROM assignment_files
+                WHERE assignment_id = ? AND student_id = ?
+                ORDER BY id""",
+            (assignment_id, student_id),
+        )
+
+
+    def save_uploads(assignment_id: int, student_id: int,
+                     files: list[tuple[str, bytes]]) -> list[dict[str, Any]]:
+        if len(files) > MAX_FILES:
+            raise TooLargeError(f"一次最多上传 {MAX_FILES} 个附件")
+
+        existing = len(list_for(assignment_id, student_id))
+        if existing + len(files) > MAX_FILES:
+            raise TooLargeError(f"该作业附件总数不能超过 {MAX_FILES} 个")
+
+        saved: list[dict[str, Any]] = []
+        for raw_name, content in files:
+            if len(content) > config.MAX_UPLOAD_BYTES:
+                raise TooLargeError("单个附件不能超过 64 MB")
+            if not content:
+                raise validators.ValidationError("附件内容为空")
+
+            name = _sanitize(raw_name)
+            stored = f"hw_{ids.new_filename_token()}_{name}"
+            target = safe_join(config.UPLOAD_DIR, stored)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+
+            mime, _ = mimetypes.guess_type(name)
+            file_id = connection.execute(
+                """INSERT INTO assignment_files
+                       (assignment_id, student_id, filename, stored_name, size, mime, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (assignment_id, student_id, name, stored, len(content),
+                 mime or "application/octet-stream", clock.now_iso()),
+            )
+            saved.append(
+                {"id": file_id, "filename": name, "stored_name": stored,
+                 "size": len(content), "mime": mime or "application/octet-stream"}
+            )
+
+        audit_repo.log(
+            user_id=student_id,
+            username="",
+            action="upload_assignment_attachment",
+            entity="assignment",
+            entity_id=assignment_id,
+            detail=f"上传 {len(saved)} 个附件",
+        )
+        return saved
+
+
+    def resolve_download(viewer: dict[str, Any], file_id: int) -> tuple[Path, str]:
+        row = connection.query_one(
+            """SELECT f.*, a.class_id, c.teacher_id
+                 FROM assignment_files f
+                 JOIN assignments a ON a.id = f.assignment_id
+                 JOIN classes cl ON cl.id = a.class_id
+                 JOIN courses c ON c.id = cl.course_id
+                WHERE f.id = ?""",
+            (file_id,),
+        )
+        if row is None:
+            raise NotFoundError("附件不存在")
+
+        allowed = (
+            int(row["student_id"]) == int(viewer["id"])
+            or int(row["teacher_id"]) == int(viewer["id"])
+            or viewer["role"] == permissions.ROLE_ADMIN
+        )
+        if not allowed:
+            raise ForbiddenError("无权下载该附件")
+
+        path = safe_join(config.UPLOAD_DIR, row["stored_name"])
+        if not path.exists():
+            raise NotFoundError("文件已丢失")
+        return path, row["filename"]
+
+
+    def delete_file(viewer: dict[str, Any], file_id: int) -> None:
+        row = connection.query_one(
+            "SELECT * FROM assignment_files WHERE id = ?", (file_id,)
+        )
+        if row is None:
+            raise NotFoundError("附件不存在")
+        if int(row["student_id"]) != int(viewer["id"]) and viewer["role"] != permissions.ROLE_ADMIN:
+            raise ForbiddenError("只能删除自己的附件")
+
+        path = safe_join(config.UPLOAD_DIR, row["stored_name"])
+        if path.exists():
+            path.unlink()
+        connection.execute("DELETE FROM assignment_files WHERE id = ?", (file_id,))
+    return SimpleNamespace(
+        audit_repo=audit_repo,
+        class_repo=class_repo,
+        enroll_repo=enroll_repo,
+        MAX_FILES=MAX_FILES,
+        list_for=list_for,
+        save_uploads=save_uploads,
+        resolve_download=resolve_download,
+        delete_file=delete_file,
     )
 
 
@@ -8715,7 +8892,7 @@ def _mod_course_api(Response, Router, course_service, created, ok, paginated, pe
 # ======================================================================
 # 模块：backend/api/assignment_routes.py
 # ======================================================================
-def _mod_assignment_api(Response, Router, assignment_service, created, ok, permissions, validators):
+def _mod_assignment_api(Response, Router, assignment_service, attachment_service, created, file_response, multipart, ok, permissions, validators):
     """作业接口。"""
 
 
@@ -8802,6 +8979,45 @@ def _mod_assignment_api(Response, Router, assignment_service, created, ok, permi
             user, req.path_params["assignment_id"], rows
         )
         return ok(result, f"已批改 {result['updated']} 份")
+
+    # ---------------------------------------------------------------- 附件
+
+
+    @router.get("/api/assignments/<int:assignment_id>/attachments", summary="我的附件列表")
+    def list_attachments(req) -> Response:
+        user = permissions.require_login(req.user)
+        return ok(attachment_service.list_for(req.path_params["assignment_id"], int(user["id"])))
+
+
+    @router.post("/api/assignments/<int:assignment_id>/attachments", roles=("student",),
+                 summary="上传作业附件")
+    def upload_attachment(req) -> Response:
+        user = permissions.require_role(req.user, "student")
+        content_type = req.header("content-type")
+        if not multipart.is_multipart(content_type):
+            raise validators.ValidationError("请使用 multipart/form-data 上传")
+        form = multipart.parse_multipart(req.body, content_type)
+        files = [(f.filename, f.data) for f in form.files.values()]
+        if not files:
+            raise validators.ValidationError("没有找到上传文件")
+        saved = attachment_service.save_uploads(
+            req.path_params["assignment_id"], int(user["id"]), files
+        )
+        return created({"files": saved}, "上传成功")
+
+
+    @router.get("/api/attachments/<int:file_id>/download", summary="下载作业附件")
+    def download_attachment(req) -> Response:
+        user = permissions.require_login(req.user)
+        path, filename = attachment_service.resolve_download(user, req.path_params["file_id"])
+        return file_response(path, download_name=filename)
+
+
+    @router.delete("/api/attachments/<int:file_id>", roles=("student",), summary="删除附件")
+    def delete_attachment(req) -> Response:
+        user = permissions.require_role(req.user, "student")
+        attachment_service.delete_file(user, req.path_params["file_id"])
+        return ok(None, "已删除")
     return SimpleNamespace(
         router=router,
         list_class_assignments=list_class_assignments,
@@ -8814,6 +9030,10 @@ def _mod_assignment_api(Response, Router, assignment_service, created, ok, permi
         list_submissions=list_submissions,
         grade_submission=grade_submission,
         batch_grade=batch_grade,
+        list_attachments=list_attachments,
+        upload_attachment=upload_attachment,
+        download_attachment=download_attachment,
+        delete_attachment=delete_attachment,
     )
 
 
@@ -9585,6 +9805,7 @@ search_service = _mod_search_service(permissions=permissions, connection=connect
 auth_service = _mod_auth_service(config=config, clock=clock, ids=ids, permissions=permissions, security=security, ForbiddenError=errors.ForbiddenError, RateLimitError=errors.RateLimitError, UnauthorizedError=errors.UnauthorizedError, ValidationError=errors.ValidationError, AuditRepository=audit_repo.AuditRepository, LoginAttemptRepository=users_repo.LoginAttemptRepository, SessionRepository=users_repo.SessionRepository, UserRepository=users_repo.UserRepository)
 notification_service = _mod_notification_service(permissions=permissions, NotificationRepository=content_repo.NotificationRepository, UserRepository=users_repo.UserRepository)
 announcement_service = _mod_announcement_service(permissions=permissions, validators=validators, NotFoundError=errors.NotFoundError, AuditRepository=audit_repo.AuditRepository, AnnouncementRepository=content_repo.AnnouncementRepository, ClassRepository=courses_repo.ClassRepository, CourseRepository=courses_repo.CourseRepository, EnrollmentRepository=courses_repo.EnrollmentRepository, notify_many=notification_service.notify_many)
+attachment_service = _mod_attachment_service(config=config, clock=clock, ids=ids, permissions=permissions, validators=validators, ForbiddenError=errors.ForbiddenError, NotFoundError=errors.NotFoundError, TooLargeError=errors.TooLargeError, connection=connection, safe_join=static_lib.safe_join, AuditRepository=audit_repo.AuditRepository, ClassRepository=courses_repo.ClassRepository, EnrollmentRepository=courses_repo.EnrollmentRepository)
 user_service = _mod_user_service(config=config, clock=clock, permissions=permissions, security=security, validators=validators, ConflictError=errors.ConflictError, NotFoundError=errors.NotFoundError, ValidationError=errors.ValidationError, AuditRepository=audit_repo.AuditRepository, SessionRepository=users_repo.SessionRepository, UserRepository=users_repo.UserRepository, auth_service=auth_service)
 course_service = _mod_course_service(config=config, clock=clock, ids=ids, permissions=permissions, validators=validators, ConflictError=errors.ConflictError, ForbiddenError=errors.ForbiddenError, NotFoundError=errors.NotFoundError, ValidationError=errors.ValidationError, AuditRepository=audit_repo.AuditRepository, ClassRepository=courses_repo.ClassRepository, CourseRepository=courses_repo.CourseRepository, EnrollmentRepository=courses_repo.EnrollmentRepository, UserRepository=users_repo.UserRepository)
 assignment_service = _mod_assignment_service(config=config, clock=clock, permissions=permissions, validators=validators, ConflictError=errors.ConflictError, ForbiddenError=errors.ForbiddenError, NotFoundError=errors.NotFoundError, AssignmentRepository=assignments_repo.AssignmentRepository, SubmissionRepository=assignments_repo.SubmissionRepository, AuditRepository=audit_repo.AuditRepository, ClassRepository=courses_repo.ClassRepository, EnrollmentRepository=courses_repo.EnrollmentRepository, UserRepository=users_repo.UserRepository, notify_class=notification_service.notify_class)
@@ -9602,7 +9823,7 @@ seed_lib = _mod_seed_lib(config=config, clock=clock, ids=ids, security=security,
 auth_api = _mod_auth_api(permissions=permissions, validators=validators, Response=response_lib.Response, ok=response_lib.ok, Router=router_lib.Router, auth_service=auth_service)
 user_api = _mod_user_api(permissions=permissions, validators=validators, Response=response_lib.Response, created=response_lib.created, ok=response_lib.ok, paginated=response_lib.paginated, Router=router_lib.Router, CourseRepository=courses_repo.CourseRepository, user_service=user_service)
 course_api = _mod_course_api(permissions=permissions, validators=validators, Response=response_lib.Response, created=response_lib.created, ok=response_lib.ok, paginated=response_lib.paginated, Router=router_lib.Router, course_service=course_service)
-assignment_api = _mod_assignment_api(permissions=permissions, validators=validators, Response=response_lib.Response, created=response_lib.created, ok=response_lib.ok, Router=router_lib.Router, assignment_service=assignment_service)
+assignment_api = _mod_assignment_api(permissions=permissions, validators=validators, Response=response_lib.Response, created=response_lib.created, ok=response_lib.ok, Router=router_lib.Router, multipart=multipart_lib, file_response=response_lib.file_response, assignment_service=assignment_service, attachment_service=attachment_service)
 quiz_api = _mod_quiz_api(permissions=permissions, validators=validators, Response=response_lib.Response, created=response_lib.created, ok=response_lib.ok, Router=router_lib.Router, quiz_service=quiz_service)
 attendance_api = _mod_attendance_api(permissions=permissions, validators=validators, Response=response_lib.Response, created=response_lib.created, ok=response_lib.ok, Router=router_lib.Router, attendance_service=attendance_service)
 grade_api = _mod_grade_api(permissions=permissions, Response=response_lib.Response, ok=response_lib.ok, Router=router_lib.Router, grade_service=grade_service)

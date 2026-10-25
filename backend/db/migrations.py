@@ -15,7 +15,7 @@ from backend.core import clock
 from backend.db import connection
 
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
-CURRENT_VERSION = 2
+CURRENT_VERSION = 3
 
 
 def _read_schema() -> str:
@@ -54,9 +54,30 @@ def _migrate_v2(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_v3(conn: sqlite3.Connection) -> None:
+    """v2 -> v3：新增作业附件表（幂等）。"""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS assignment_files (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            assignment_id INTEGER NOT NULL REFERENCES assignments(id) ON DELETE CASCADE,
+            student_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            filename      TEXT    NOT NULL,
+            stored_name   TEXT    NOT NULL UNIQUE,
+            size          INTEGER NOT NULL DEFAULT 0,
+            mime          TEXT,
+            created_at    TEXT    NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_assignment_files_owner
+            ON assignment_files(assignment_id, student_id);
+        """
+    )
+
+
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
+    (3, _migrate_v3),
 ]
 
 
@@ -118,6 +139,7 @@ def reset_db() -> None:
         "discussion_replies",
         "discussions",
         "announcements",
+        "assignment_files",
         "notifications",
         "grade_items",
         "grade_rules",

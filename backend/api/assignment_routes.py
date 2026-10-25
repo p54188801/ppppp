@@ -5,7 +5,9 @@ from __future__ import annotations
 from backend.core import permissions, validators
 from backend.http.response import Response, created, ok
 from backend.http.router import Router
-from backend.services import assignment_service
+from backend.http import multipart
+from backend.http.response import file_response
+from backend.services import assignment_service, attachment_service
 
 router = Router()
 
@@ -89,3 +91,42 @@ def batch_grade(req) -> Response:
         user, req.path_params["assignment_id"], rows
     )
     return ok(result, f"已批改 {result['updated']} 份")
+
+# ---------------------------------------------------------------- 附件
+
+
+@router.get("/api/assignments/<int:assignment_id>/attachments", summary="我的附件列表")
+def list_attachments(req) -> Response:
+    user = permissions.require_login(req.user)
+    return ok(attachment_service.list_for(req.path_params["assignment_id"], int(user["id"])))
+
+
+@router.post("/api/assignments/<int:assignment_id>/attachments", roles=("student",),
+             summary="上传作业附件")
+def upload_attachment(req) -> Response:
+    user = permissions.require_role(req.user, "student")
+    content_type = req.header("content-type")
+    if not multipart.is_multipart(content_type):
+        raise validators.ValidationError("请使用 multipart/form-data 上传")
+    form = multipart.parse_multipart(req.body, content_type)
+    files = [(f.filename, f.data) for f in form.files.values()]
+    if not files:
+        raise validators.ValidationError("没有找到上传文件")
+    saved = attachment_service.save_uploads(
+        req.path_params["assignment_id"], int(user["id"]), files
+    )
+    return created({"files": saved}, "上传成功")
+
+
+@router.get("/api/attachments/<int:file_id>/download", summary="下载作业附件")
+def download_attachment(req) -> Response:
+    user = permissions.require_login(req.user)
+    path, filename = attachment_service.resolve_download(user, req.path_params["file_id"])
+    return file_response(path, download_name=filename)
+
+
+@router.delete("/api/attachments/<int:file_id>", roles=("student",), summary="删除附件")
+def delete_attachment(req) -> Response:
+    user = permissions.require_role(req.user, "student")
+    attachment_service.delete_file(user, req.path_params["file_id"])
+    return ok(None, "已删除")

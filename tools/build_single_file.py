@@ -45,6 +45,7 @@ MODULES: list[tuple[str, str]] = [
     ("auth_service", "backend/services/auth_service.py"),
     ("notification_service", "backend/services/notification_service.py"),
     ("announcement_service", "backend/services/announcement_service.py"),
+    ("attachment_service", "backend/services/attachment_service.py"),
     ("user_service", "backend/services/user_service.py"),
     ("course_service", "backend/services/course_service.py"),
     ("assignment_service", "backend/services/assignment_service.py"),

@@ -381,3 +381,20 @@ CREATE TABLE IF NOT EXISTS announcements (
 );
 
 CREATE INDEX IF NOT EXISTS idx_announcements_course ON announcements(course_id);
+-- ---------------------------------------------------------------------
+-- 作业附件（学生提交时上传的文件）
+-- ---------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS assignment_files (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    assignment_id INTEGER NOT NULL REFERENCES assignments(id) ON DELETE CASCADE,
+    student_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    filename      TEXT    NOT NULL,
+    stored_name   TEXT    NOT NULL UNIQUE,
+    size          INTEGER NOT NULL DEFAULT 0,
+    mime          TEXT,
+    created_at    TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_assignment_files_owner
+    ON assignment_files(assignment_id, student_id);
