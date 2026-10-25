@@ -1,0 +1,5 @@
+# 把 eduflow.example.com 换成你的域名；DNS 的 A 记录要先指向这台服务器
+eduflow.example.com {
+	encode gzip
+	reverse_proxy 127.0.0.1:8765
+}

@@ -48,6 +48,14 @@ LANG = {
     ".txt": "text",
 }
 
+# 没有扩展名、但属于工程源码/配置的文件
+NAME_LANG = {
+    "Dockerfile": "dockerfile",
+    "Caddyfile": "caddy",
+    ".dockerignore": "text",
+    ".gitignore": "text",
+}
+
 # (显示名, 判断函数, 排序)
 GROUPS = [
     ("后端 Python", lambda p: p.startswith("backend/") and p.endswith(".py"), 0),
@@ -68,8 +76,8 @@ def group_of(rel: str) -> str:
     return "配置"
 
 
-def collect() -> dict[str, list[tuple[str, int, str]]]:
-    result: dict[str, list[tuple[str, int, str]]] = {}
+def collect() -> dict[str, list[tuple[str, int, str, str]]]:
+    result: dict[str, list[tuple[str, int, str, str]]] = {}
     for path in ROOT.rglob("*"):
         if not path.is_file():
             continue
@@ -78,14 +86,12 @@ def collect() -> dict[str, list[tuple[str, int, str]]]:
         rel = path.relative_to(ROOT).as_posix()
         if rel in SKIP_FILES or rel.startswith("docs/"):
             continue
-        suffix = path.suffix.lower()
-        if path.name == ".gitignore":
-            suffix = ".txt"
-        if suffix not in LANG:
+        lang = NAME_LANG.get(path.name) or LANG.get(path.suffix.lower())
+        if not lang:
             continue
         text = path.read_text(encoding="utf-8-sig", errors="replace")
         lines = text.count("\n") + (0 if text.endswith("\n") else 1)
-        result.setdefault(group_of(rel), []).append((rel, lines, text))
+        result.setdefault(group_of(rel), []).append((rel, lines, text, lang))
     for items in result.values():
         items.sort(key=lambda item: item[0])
     return result
@@ -98,7 +104,9 @@ def build(out: Path) -> tuple[int, int]:
         key=lambda item: next(order for name, _p, order in GROUPS if name == item[0]),
     )
     total_files = sum(len(items) for items in groups.values())
-    total_lines = sum(lines for items in groups.values() for _rel, lines, _text in items)
+    total_lines = sum(
+        lines for items in groups.values() for _rel, lines, _text, _lang in items
+    )
 
     parts: list[str] = [
         "# EduFlow 全部源码",
@@ -116,7 +124,7 @@ def build(out: Path) -> tuple[int, int]:
     ]
     for name, items in ordered:
         parts.append(
-            f"| {name} | {len(items)} | {sum(lines for _r, lines, _t in items):,} |"
+            f"| {name} | {len(items)} | {sum(lines for _r, lines, _t, _l in items):,} |"
         )
     parts.extend(
         [
@@ -129,16 +137,14 @@ def build(out: Path) -> tuple[int, int]:
     for name, items in ordered:
         parts.append(f"### {name}")
         parts.append("")
-        for rel, lines, _text in items:
+        for rel, lines, _text, _lang in items:
             parts.append(f"- `{rel}`（{lines:,} 行）")
         parts.append("")
 
     for name, items in ordered:
         parts.append(f"## {name}")
         parts.append("")
-        for rel, lines, text in items:
-            suffix = Path(rel).suffix.lower()
-            lang = LANG.get(suffix, "text")
+        for rel, lines, text, lang in items:
             parts.append(f"### `{rel}`（{lines:,} 行）")
             parts.append("")
             parts.append(f"````{lang}")

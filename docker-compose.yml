@@ -1,0 +1,17 @@
+services:
+  eduflow:
+    build: .
+    image: eduflow:latest
+    container_name: eduflow
+    ports:
+      - "8765:8765"
+    environment:
+      EDUFLOW_HOST: 0.0.0.0
+      EDUFLOW_PORT: 8765
+      EDUFLOW_DATA_DIR: /data
+    volumes:
+      - eduflow_data:/data
+    restart: unless-stopped
+
+volumes:
+  eduflow_data:

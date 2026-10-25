@@ -37,7 +37,8 @@ FRONTEND_DIST = Path(os.environ.get("EDUFLOW_FRONTEND_DIST", BASE_DIR / "fronten
 # ---------------------------------------------------------------------------
 
 HOST = os.environ.get("EDUFLOW_HOST", "127.0.0.1")
-PORT = int(os.environ.get("EDUFLOW_PORT", "8765"))
+# 兼容 Render / Railway / Fly 等平台注入的 PORT 环境变量
+PORT = int(os.environ.get("EDUFLOW_PORT") or os.environ.get("PORT") or "8765")
 SERVER_NAME = "EduFlow/1.0"
 
 # 单次请求体上限（16 MB），超过直接拒绝，避免内存被撑爆

@@ -17,9 +17,10 @@ f6af052 feat: 作业附件上传与下载（含越权校验）
 | 仓库 | `D:\EduFlow`（唯一仓库，含完整 git 历史） |
 | 接口 | 116 条 |
 | 测试 | 单元 36 + 冒烟 39 + 新功能 19 + 边界 15 + 章节 30 = 139 项全过 |
-| UI 巡检 | 三角色 26 页，控制台 0 错误 |
-| 单文件 | `eduflow_all.py` 11,484 行，routes 116，已与源码同步 |
+| UI 巡检 | 桌面三角色 26 页 + 手机端 4 页，控制台 0 错误 |
+| 单文件 | `eduflow_all.py` 11,485 行，routes 116，已与源码同步 |
 | 数据表 | 26 张（schema v4 新增 `chapters` / `tasks` / `task_progress`） |
+| 部署 | Dockerfile / docker-compose / Caddy / Render 配置已就绪 |
 | 工作区 | 干净 |
 
 ## 环境注意
@@ -57,6 +58,16 @@ Python 用项目自带的：`D:\EduFlow\.venv\Scripts\python.exe`。
   启动时若已有演示库会幂等补齐（`chapters_seeded` 标记，不会反复重建）。
 - **测试**：`tests/test_chapters.py` 30 项（正例 + 越权 + 非法参数 + 级联删除），
   `tests/smoke_test.py` 增加 5 项章节链路。全量 139 项通过，UI 巡检 0 控制台错误。
+
+## 本次已完成：浏览器公网访问 + 手机端
+
+- **手机端**：侧边栏改为抽屉（`☰` 打开、`✕` 关闭），统计卡两列、课程/章节单列、
+  表格横向滚动、弹窗自适应；`scripts/mobile_sweep.py` 在 390×844 视口巡检，0 横向溢出、0 控制台错误。
+- **部署**：`Dockerfile`（Node 构建前端 + Python 运行时）、`docker-compose.yml`、
+  `deploy/Caddyfile`（自动 HTTPS）、`render.yaml`、`deploy/README.md`；
+  `backend/config.py` 兼容平台注入的 `PORT`。
+- **仍未上线**：公网网址需要用户提供服务器/域名，或直接用 GitHub Codespaces 的 8765 转发地址；
+  代码侧已无阻塞。
 
 ## 待做（按优先级）
 

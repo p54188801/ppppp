@@ -61,6 +61,8 @@ def cmd_serve(args) -> int:
     migrations.init_db()
     # seed() 幂等：已有演示数据时只补齐后来新增的演示内容（如章节任务点）
     seed()
+    if args.host not in ("127.0.0.1", "localhost", "::1"):
+        print("提示：当前监听公网地址，部署到公网前请先修改 admin / t1001 / s2001 的默认密码，并启用 HTTPS。")
     app = Application()
     server = HttpServer(app.dispatch, host=args.host, port=args.port).start()
     server.wait_ready()

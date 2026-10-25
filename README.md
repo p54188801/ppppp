@@ -105,10 +105,18 @@ cd frontend && npm run dev
 |---|---|
 | ![成绩册](docs/screenshots/08-gradebook.png) | ![作业](docs/screenshots/11b-assignment-detail.png) |
 
-更多截图见 `docs/screenshots/`（登录、课程、章节任务点、签到、成绩单、通知、用户管理等 28 张）。
+更多截图见 `docs/screenshots/`（登录、课程、章节任务点、签到、成绩单、通知、用户管理等 32 张）。
+
+手机端已适配（侧边栏抽屉、单列卡片、表格横向滚动）：
+
+| 手机端工作台 | 手机端课程章节 |
+|---|---|
+| ![手机工作台](docs/screenshots/26-mobile-dashboard.png) | ![手机章节](docs/screenshots/28-mobile-chapters.png) |
 
 > 课程设计要求逐项对照（提交记录、Vue3/WebView、纯代码行数、PyCharm 展示）见
 > [docs/验收对照.md](docs/验收对照.md)。
+>
+> 想通过公网网址访问（含手机）见 [deploy/README.md](deploy/README.md)，支持 Docker + 域名 / Codespaces / 云平台。
 
 ---
 
@@ -117,7 +125,7 @@ cd frontend && npm run dev
 
 ## 三、单文件版（提交/演示用）
 
-eduflow_all.py 是把整个后端合并成的**单个文件**（11,484 行，672 个函数，47 个类，零第三方依赖），
+eduflow_all.py 是把整个后端合并成的**单个文件**（11,485 行，672 个函数，47 个类，零第三方依赖），
 功能和多文件版完全一致，适合单文件提交或答辩演示：
 
 ```powershell
@@ -137,7 +145,7 @@ cd D:\EduFlow
 .\.venv\Scripts\python.exe tools\export_all_code.py
 ```
 
-生成 `docs/ALL_CODE.md`（约 110 个源码文件、2.1 万行），PyCharm 双击打开即可从头到尾展示；
+生成 `docs/ALL_CODE.md`（约 116 个源码文件、2.2 万行），PyCharm 双击打开即可从头到尾展示；
 也可以右键 `tools/export_all_code.py` → **Run**。详细步骤见 [docs/验收对照.md](docs/验收对照.md)。
 
 ## 四、在 GitHub Codespaces 中运行（无需本机环境）

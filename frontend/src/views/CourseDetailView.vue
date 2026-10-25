@@ -795,7 +795,7 @@ onMounted(load)
         </div>
 
         <div v-for="chapter in chapters" :key="chapter.id" class="card">
-          <div class="card-title" style="align-items: flex-start">
+          <div class="card-title chapter-card-title" style="align-items: flex-start">
             <div style="min-width: 0">
               <div class="row wrap" style="gap: 8px">
                 <span class="badge blue"># {{ chapter.order_no }}</span>
@@ -836,7 +836,7 @@ onMounted(load)
             :key="task.id"
             style="padding: 12px 0; border-bottom: 1px solid var(--border)"
           >
-            <div class="row between" style="gap: 12px; align-items: flex-start">
+            <div class="row between task-row" style="gap: 12px; align-items: flex-start">
               <div style="min-width: 0; flex: 1">
                 <div class="row wrap" style="gap: 6px">
                   <span class="badge" :class="taskTypeBadge(task.type)">{{ task.type_label }}</span>

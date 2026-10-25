@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: eduflow
+    runtime: docker
+    plan: starter
+    healthCheckPath: /api/health
+    envVars:
+      - key: EDUFLOW_DATA_DIR
+        value: /data
+      - key: EDUFLOW_HOST
+        value: 0.0.0.0
+    disk:
+      name: eduflow-data
+      mountPath: /data
+      sizeGB: 1

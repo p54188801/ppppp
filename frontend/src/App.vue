@@ -11,6 +11,7 @@ const route = useRoute()
 const router = useRouter()
 
 const unread = ref(0)
+const sidebarOpen = ref(false)
 let timer = null
 
 // 顶栏全局搜索关键词
@@ -158,6 +159,14 @@ watch(
   },
 )
 
+// 手机端：切页后自动收起侧边栏
+watch(
+  () => route.fullPath,
+  () => {
+    sidebarOpen.value = false
+  },
+)
+
 onMounted(() => {
   refreshUnread()
   // 直接刷新/回退到搜索页时，顶栏也要带上当前关键词
@@ -175,14 +184,23 @@ onUnmounted(() => {
 <template>
   <router-view v-if="isLoginPage" />
 
-  <div v-else class="shell">
-    <aside class="sidebar">
+  <div v-else class="shell" :class="{ 'sidebar-open': sidebarOpen }">
+    <div v-if="sidebarOpen" class="sidebar-mask" @click="sidebarOpen = false" />
+    <aside class="sidebar" :class="{ open: sidebarOpen }">
       <div class="brand">
         <div class="brand-mark">E</div>
         <div class="brand-text">
           <strong>EduFlow</strong>
           <span>教务系统 v1.0</span>
         </div>
+        <button
+          type="button"
+          class="sidebar-close"
+          aria-label="关闭导航菜单"
+          @click="sidebarOpen = false"
+        >
+          ✕
+        </button>
       </div>
 
       <template v-for="group in groupedNav" :key="group.title">
@@ -193,6 +211,7 @@ onUnmounted(() => {
           :to="{ name: item.name }"
           class="nav-item"
           :class="{ active: route.name === item.name }"
+          @click="sidebarOpen = false"
         >
           <span class="nav-icon">{{ item.icon }}</span>
           <span>{{ item.label }}</span>
@@ -211,20 +230,30 @@ onUnmounted(() => {
 
     <div class="main">
       <header class="topbar">
-        <div class="topbar-title">{{ pageTitle }}</div>
+        <div class="row" style="gap: 8px; min-width: 0">
+          <button
+            type="button"
+            class="mobile-menu"
+            aria-label="打开导航菜单"
+            @click="sidebarOpen = !sidebarOpen"
+          >
+            ☰
+          </button>
+          <div class="topbar-title">{{ pageTitle }}</div>
+        </div>
         <div class="topbar-right">
           <input
             v-model="topSearch"
-            class="input"
+            class="input topbar-search"
             style="width: 220px; background: var(--bg-soft)"
             placeholder="搜索课程 / 作业 / 资料…"
             maxlength="64"
             aria-label="全局搜索"
             @keyup.enter="handleTopSearch"
           />
-          <div class="nav-item" style="padding: 6px 10px" @click="go('notifications')">
+          <div class="nav-item topbar-action" style="padding: 6px 10px" @click="go('notifications')">
             <span class="nav-icon">✦</span>
-            <span>通知</span>
+            <span class="topbar-action-label">通知</span>
             <span v-if="unread" class="badge red">{{ unread }}</span>
           </div>
           <div
@@ -236,7 +265,7 @@ onUnmounted(() => {
             <div class="brand-mark" style="width: 30px; height: 30px; font-size: 13px">
               {{ initials }}
             </div>
-            <div class="small muted">{{ auth.displayName }}</div>
+            <div class="small muted user-name">{{ auth.displayName }}</div>
           </div>
         </div>
       </header>
