@@ -109,7 +109,22 @@ cd frontend && npm run dev
 
 ---
 
-## 三、在 GitHub Codespaces 中运行（无需本机环境）
+
+---
+
+## 三、单文件版（提交/演示用）
+
+eduflow_all.py 是把整个后端合并成的**单个文件**（9,300 行，571 个函数，43 个类，零第三方依赖），
+功能和多文件版完全一致，适合单文件提交或答辩演示：
+
+```powershell
+cd D:\EduFlow
+.\.venv\Scripts\python.exe eduflow_all.py          # 桌面窗口
+.\.venv\Scripts\python.exe eduflow_all.py serve    # 只起服务
+```
+
+该文件由 `tools/build_single_file.py` 自动生成，详见 `单文件版说明.md`。
+## 四、在 GitHub Codespaces 中运行（无需本机环境）
 
 仓库已内置 `.devcontainer`：创建 Codespace 后会自动装 Python/Node 依赖、构建前端、初始化数据库。
 
@@ -132,7 +147,7 @@ bash scripts/codespace_start.sh
 
 ---
 
-## 四、功能清单
+## 五、功能清单
 
 ### 课程与教学班
 - 课程创建/归档，一门课可开多个教学班，每个班有独立邀请码
@@ -175,7 +190,7 @@ bash scripts/codespace_start.sh
 
 ---
 
-## 五、代码结构
+## 六、代码结构
 
 ```
 eduflow/
@@ -222,7 +237,7 @@ HTTP 层是自研的，不依赖 Flask/FastAPI，整个后端除 pywebview 外�
 
 ---
 
-## 六、开发命令
+## 七、开发命令
 
 ```powershell
 # 建库
@@ -251,7 +266,7 @@ npm run build    # 产物输出 dist/，由后端静态托管
 
 ---
 
-## 七、接口约定
+## 八、接口约定
 
 统一响应信封：
 
@@ -281,7 +296,7 @@ npm run build    # 产物输出 dist/，由后端静态托管
 
 ---
 
-## 八、实现说明
+## 九、实现说明
 
 - **为什么自研 HTTP 层**：桌面应用只需要本机回环通信，标准库足够；少一层依赖就少一处
   打包/兼容风险（尤其在 Python 3.14 上）。
@@ -293,6 +308,6 @@ npm run build    # 产物输出 dist/，由后端静态托管
 
 ---
 
-## 九、许可证
+## 十、许可证
 
 仅用于学习与演示。演示数据中的姓名、学号、课程均为虚构。
