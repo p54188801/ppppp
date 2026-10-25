@@ -85,6 +85,8 @@ a:hover {
   display: grid;
   grid-template-columns: 232px 1fr;
   height: 100vh;
+  /* 关键：不允许整页被内容撑高，滚动交给 .content */
+  overflow: hidden;
 }
 
 .sidebar {
@@ -171,6 +173,9 @@ a:hover {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  /* 网格项默认 min-height:auto 会被内容撑高，必须归零，滚动条才会出现在 .content 上 */
+  min-height: 0;
+  overflow: hidden;
 }
 
 .topbar {
@@ -198,8 +203,12 @@ a:hover {
 
 .content {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 22px 26px 60px;
+  scroll-behavior: smooth;
+  outline: none;
 }
 
 .page-head {

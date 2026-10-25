@@ -21,6 +21,8 @@ const loading = ref(true)
 const course = ref(null)
 const resources = ref([])
 const threads = ref([])
+const announcements = ref([])
+const expandedAnn = ref({})
 const expanded = ref({})
 const replyDrafts = ref({})
 const replyingId = ref(0)
@@ -37,6 +39,13 @@ const uploadForm = ref({ title: '', description: '', category: '课件' })
 const uploadFile = ref(null)
 const uploading = ref(false)
 
+// 课程公告：发布与编辑复用同一个弹窗，editingAnnId 为 0 表示新建
+const showAnn = ref(false)
+const editingAnnId = ref(0)
+const annForm = ref({ title: '', content: '', pinned: false })
+const savingAnn = ref(false)
+const annActingId = ref(0)
+
 const showThread = ref(false)
 const threadForm = ref({ title: '', content: '' })
 const postingThread = ref(false)
@@ -47,14 +56,16 @@ const classes = computed(() => course.value?.classes || [])
 async function load() {
   loading.value = true
   try {
-    const [detail, resourceList, threadList] = await Promise.all([
+    const [detail, resourceList, threadList, annList] = await Promise.all([
       api.get(`/api/courses/${courseId.value}`),
       api.get(`/api/courses/${courseId.value}/resources`),
       api.get(`/api/courses/${courseId.value}/discussions`),
+      api.get(`/api/courses/${courseId.value}/announcements`),
     ])
     course.value = detail
     resources.value = resourceList || []
     threads.value = threadList || []
+    announcements.value = annList || []
   } catch (error) {
     ui.error(error.message)
   } finally {
@@ -294,6 +305,98 @@ function authorBadge(role) {
   return 'gray'
 }
 
+/* ---------------------------------------------------------------- 课程公告 */
+
+// 正文超过这个长度（或超过 3 行）默认折叠
+const ANN_PREVIEW_LENGTH = 120
+
+async function refreshAnnouncements() {
+  const list = await api.get(`/api/courses/${courseId.value}/announcements`)
+  announcements.value = list || []
+}
+
+/** 打开弹窗：传公告即编辑，不传即新建 */
+function openAnnForm(item = null) {
+  editingAnnId.value = item ? item.id : 0
+  annForm.value = item
+    ? { title: item.title || '', content: item.content || '', pinned: Boolean(item.pinned) }
+    : { title: '', content: '', pinned: false }
+  showAnn.value = true
+}
+
+async function submitAnn() {
+  const title = annForm.value.title.trim()
+  if (title.length < 2) {
+    ui.error('公告标题至少需要 2 个字符')
+    return
+  }
+  savingAnn.value = true
+  try {
+    const payload = {
+      title,
+      content: annForm.value.content.trim(),
+      pinned: annForm.value.pinned,
+    }
+    if (editingAnnId.value) {
+      await api.put(`/api/announcements/${editingAnnId.value}`, payload)
+      ui.success('公告已更新')
+    } else {
+      await api.post(`/api/courses/${courseId.value}/announcements`, payload)
+      ui.success('公告已发布')
+    }
+    showAnn.value = false
+    await refreshAnnouncements()
+  } catch (error) {
+    ui.error(error.message)
+  } finally {
+    savingAnn.value = false
+  }
+}
+
+async function deleteAnn(item) {
+  const ok = await ui.confirm({
+    title: '删除公告',
+    message: `确定删除公告「${item.title}」吗？删除后不可恢复。`,
+    confirmText: '删除',
+    danger: true,
+  })
+  if (!ok) return
+  annActingId.value = item.id
+  try {
+    await api.del(`/api/announcements/${item.id}`)
+    ui.success('公告已删除')
+    await refreshAnnouncements()
+  } catch (error) {
+    ui.error(error.message)
+  } finally {
+    annActingId.value = 0
+  }
+}
+
+function toggleAnn(id) {
+  expandedAnn.value = { ...expandedAnn.value, [id]: !expandedAnn.value[id] }
+}
+
+/** 内容过长且未展开时需要折叠成 3 行 */
+function annCollapsed(item) {
+  const content = item.content || ''
+  if (!content || expandedAnn.value[item.id]) return false
+  return content.length > ANN_PREVIEW_LENGTH || content.split('\n').length > 3
+}
+
+/**
+ * 公告正文样式：未展开时用 -webkit-line-clamp 折成 3 行。
+ * 这里直接返回 CSS 字符串，避免对象写法对 -webkit- 前缀属性的兼容坑。
+ */
+function annStyle(item) {
+  const base = 'margin: 8px 0 0; white-space: pre-wrap;'
+  if (!annCollapsed(item)) return base
+  return (
+    base +
+    ' display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;'
+  )
+}
+
 onMounted(load)
 </script>
 
@@ -333,6 +436,7 @@ onMounted(load)
         <div class="row wrap small faint" style="gap: 18px">
           <span>教学班 {{ classes.length }} 个</span>
           <span>学生 {{ course.student_count || 0 }} 人</span>
+          <span>公告 {{ announcements.length }} 条</span>
           <span>资料 {{ resources.length }} 份</span>
           <span>讨论 {{ threads.length }} 条</span>
         </div>
@@ -386,6 +490,55 @@ onMounted(load)
                 {{ item.join_code }} ⧉
               </span>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 课程公告 -->
+      <div class="card">
+        <div class="card-title">
+          <span>课程公告</span>
+          <button v-if="canManage" class="btn sm primary" @click="openAnnForm()">发布公告</button>
+        </div>
+        <div v-if="!announcements.length" class="empty">暂无公告</div>
+        <div v-else>
+          <div
+            v-for="item in announcements"
+            :key="item.id"
+            style="padding: 12px 0; border-bottom: 1px solid var(--border)"
+          >
+            <div class="row between" style="gap: 12px; align-items: flex-start">
+              <div style="min-width: 0; flex: 1">
+                <div class="row wrap" style="gap: 6px">
+                  <span v-if="item.pinned" class="badge yellow">置顶</span>
+                  <strong>{{ item.title }}</strong>
+                </div>
+                <div class="faint small">
+                  {{ item.author_name || '未知发布人' }} · {{ relativeTime(item.created_at) }}
+                </div>
+              </div>
+              <div v-if="canManage" class="row" style="gap: 6px">
+                <button class="btn sm ghost" @click="openAnnForm(item)">编辑</button>
+                <button
+                  class="btn sm danger"
+                  :disabled="annActingId === item.id"
+                  @click="deleteAnn(item)"
+                >
+                  {{ annActingId === item.id ? '删除中…' : '删除' }}
+                </button>
+              </div>
+            </div>
+
+            <p v-if="item.content" class="muted small" :style="annStyle(item)">{{ item.content }}</p>
+
+            <button
+              v-if="item.content && (item.content.length > ANN_PREVIEW_LENGTH || item.content.split('\n').length > 3)"
+              class="btn ghost sm"
+              style="padding: 2px 6px; margin-top: 4px"
+              @click="toggleAnn(item.id)"
+            >
+              {{ expandedAnn[item.id] ? '收起 ▲' : '展开 ▼' }}
+            </button>
           </div>
         </div>
       </div>
@@ -591,6 +744,42 @@ onMounted(load)
           <button type="button" class="btn" @click="showThread = false">取消</button>
           <button type="submit" class="btn primary" :disabled="postingThread">
             {{ postingThread ? '发布中…' : '发布话题' }}
+          </button>
+        </div>
+      </form>
+    </div>
+
+    <!-- 发布 / 编辑公告 -->
+    <div v-if="showAnn" class="modal-mask" @click.self="showAnn = false">
+      <form class="modal" @submit.prevent="submitAnn">
+        <div class="modal-head">
+          <h3>{{ editingAnnId ? '编辑公告' : '发布公告' }}</h3>
+          <button type="button" class="btn ghost sm" @click="showAnn = false">✕</button>
+        </div>
+        <div class="field">
+          <label>公告标题</label>
+          <input v-model="annForm.title" class="input" placeholder="一句话说明公告内容" maxlength="120" />
+        </div>
+        <div class="field">
+          <label>公告正文</label>
+          <textarea
+            v-model="annForm.content"
+            class="textarea"
+            placeholder="补充详细说明（选填）"
+            maxlength="20000"
+          />
+        </div>
+        <div class="field">
+          <label style="display: flex; align-items: center; gap: 8px; cursor: pointer">
+            <input v-model="annForm.pinned" type="checkbox" style="width: auto" />
+            <span>置顶该公告</span>
+          </label>
+          <div class="hint">置顶公告会排在列表最前面</div>
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn" @click="showAnn = false">取消</button>
+          <button type="submit" class="btn primary" :disabled="savingAnn">
+            {{ savingAnn ? '保存中…' : editingAnnId ? '保存修改' : '发布公告' }}
           </button>
         </div>
       </form>

@@ -126,9 +126,19 @@ def main(argv: list[str] | None = None) -> int:
     try:
         import webview
     except ImportError:
-        logger.error("未安装 pywebview，可执行 pip install pywebview，或使用 --browser 模式")
-        server.stop()
-        return 1
+        # 没装 pywebview 时不要直接失败：退化成浏览器模式，至少能正常用
+        logger.warning(
+            "未安装 pywebview，已改用浏览器模式；执行 pip install pywebview 可启用桌面窗口"
+        )
+        webbrowser.open(url)
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            logger.info("收到中断信号，退出")
+        finally:
+            server.stop()
+        return 0
 
     window = webview.create_window(
         WINDOW_TITLE,

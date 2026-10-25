@@ -421,7 +421,22 @@ CREATE TABLE IF NOT EXISTS system_settings (
     value      TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
-"""
+-- ---------------------------------------------------------------------
+-- 课程公告
+-- ---------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS announcements (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    course_id  INTEGER NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+    title      TEXT    NOT NULL,
+    content    TEXT    NOT NULL DEFAULT '',
+    author_id  INTEGER NOT NULL REFERENCES users(id),
+    pinned     INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT    NOT NULL,
+    updated_at TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_announcements_course ON announcements(course_id);"""
 
 
 # ======================================================================
@@ -1910,6 +1925,115 @@ def _mod_connection(config):
 
 
 # ======================================================================
+# 模块：backend/services/backup_service.py
+# ======================================================================
+def _mod_backup_service(NotFoundError, ValidationError, clock, config, connection):
+    """数据备份与恢复。
+
+    用 SQLite 官方 backup API 在服务运行中做一致性快照；备份放在 data/backups。
+    恢复是破坏性操作，接口层要求 confirm=true 才执行。
+    """
+
+
+    import sqlite3
+    from pathlib import Path
+    from typing import Any
+
+
+    PREFIX = "eduflow-"
+
+
+    def _dir() -> Path:
+        path = Path(config.BACKUP_DIR)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+
+    def create_backup(note: str = "") -> dict[str, Any]:
+        stamp = clock.utcnow().strftime("%Y%m%d-%H%M%S")
+        safe_note = "".join(ch for ch in note if ch.isalnum() or ch in "-_")[:20]
+        name = f"{PREFIX}{stamp}{('-' + safe_note) if safe_note else ''}.db"
+        target = _dir() / name
+
+        source = connection.get_connection()
+        dest = sqlite3.connect(str(target))
+        try:
+            source.backup(dest)
+        finally:
+            dest.close()
+
+        stat = target.stat()
+        return {
+            "filename": name,
+            "size": stat.st_size,
+            "size_kb": round(stat.st_size / 1024, 1),
+            "created_at": clock.now_iso(),
+            "note": note,
+        }
+
+
+    def list_backups() -> list[dict[str, Any]]:
+        items = []
+        for path in sorted(_dir().glob(f"{PREFIX}*.db"), reverse=True):
+            stat = path.stat()
+            items.append(
+                {
+                    "filename": path.name,
+                    "size": stat.st_size,
+                    "size_kb": round(stat.st_size / 1024, 1),
+                    "created_at": clock.from_timestamp(stat.st_mtime),
+                }
+            )
+        return items
+
+
+    def resolve_backup(filename: str) -> Path:
+        if not filename or "/" in filename or "\\" in filename or ".." in filename:
+            raise ValidationError("备份文件名不合法")
+        if not filename.startswith(PREFIX):
+            raise ValidationError("备份文件名不合法")
+        path = _dir() / filename
+        if not path.is_file():
+            raise NotFoundError("备份文件不存在")
+        return path
+
+
+    def delete_backup(filename: str) -> None:
+        resolve_backup(filename).unlink()
+
+
+    def restore_backup(filename: str) -> dict[str, Any]:
+        path = resolve_backup(filename)
+        source = sqlite3.connect(str(path))
+        target = connection.get_connection()
+        try:
+            source.backup(target)
+        finally:
+            source.close()
+        target.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        return {"restored_from": filename, "at": clock.now_iso()}
+
+
+    def stats() -> dict[str, Any]:
+        items = list_backups()
+        return {
+            "count": len(items),
+            "total_kb": round(sum(item["size"] for item in items) / 1024, 1),
+            "latest": items[0] if items else None,
+            "dir": str(_dir()),
+        }
+    return SimpleNamespace(
+        PREFIX=PREFIX,
+        create_backup=create_backup,
+        list_backups=list_backups,
+        resolve_backup=resolve_backup,
+        delete_backup=delete_backup,
+        restore_backup=restore_backup,
+        stats=stats,
+    )
+
+
+# ======================================================================
 # 模块：backend/db/migrations.py
 # ======================================================================
 def _mod_migrations(clock, config, connection):
@@ -1926,7 +2050,7 @@ def _mod_migrations(clock, config, connection):
 
 
     SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
-    CURRENT_VERSION = 1
+    CURRENT_VERSION = 2
 
 
     def _read_schema() -> str:
@@ -1946,8 +2070,28 @@ def _mod_migrations(clock, config, connection):
         conn.executescript(_read_schema())
 
 
+    def _migrate_v2(conn: sqlite3.Connection) -> None:
+        """v1 -> v2：新增课程公告表（幂等）。"""
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS announcements (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                course_id  INTEGER NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+                title      TEXT    NOT NULL,
+                content    TEXT    NOT NULL DEFAULT '',
+                author_id  INTEGER NOT NULL REFERENCES users(id),
+                pinned     INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT    NOT NULL,
+                updated_at TEXT    NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_announcements_course ON announcements(course_id);
+            """
+        )
+
+
     MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
         (1, _migrate_v1),
+        (2, _migrate_v2),
     ]
 
 
@@ -2008,6 +2152,7 @@ def _mod_migrations(clock, config, connection):
             "resources",
             "discussion_replies",
             "discussions",
+            "announcements",
             "notifications",
             "grade_items",
             "grade_rules",
@@ -3406,6 +3551,41 @@ def _mod_content_repo(BaseRepository, clock, connection):
 
 
 
+    class AnnouncementRepository(BaseRepository):
+        """课程公告。"""
+
+        table = "announcements"
+        writable = ("course_id", "title", "content", "author_id", "pinned")
+
+        BASE_SELECT = """
+            SELECT a.*, u.real_name AS author_name, c.name AS course_name
+              FROM announcements a
+              LEFT JOIN users u ON u.id = a.author_id
+              LEFT JOIN courses c ON c.id = a.course_id
+        """
+
+        def list_by_course(self, course_id: int, limit: int = 50) -> list[dict[str, Any]]:
+            return connection.query_all(
+                self.BASE_SELECT
+                + " WHERE a.course_id = ? ORDER BY a.pinned DESC, a.created_at DESC, a.id DESC LIMIT ?",
+                (course_id, limit),
+            )
+
+        def detail(self, announcement_id: int) -> dict[str, Any] | None:
+            return connection.query_one(self.BASE_SELECT + " WHERE a.id = ?", (announcement_id,))
+
+        def list_for_student(self, student_id: int, limit: int = 20) -> list[dict[str, Any]]:
+            return connection.query_all(
+                self.BASE_SELECT
+                + """ WHERE a.course_id IN (
+                          SELECT cl.course_id FROM enrollments e
+                            JOIN classes cl ON cl.id = e.class_id
+                           WHERE e.student_id = ? AND e.status = 'active')
+                      ORDER BY a.created_at DESC, a.id DESC LIMIT ?""",
+                (student_id, limit),
+            )
+
+
     class ResourceRepository(BaseRepository):
         table = "resources"
         writable = (
@@ -3609,6 +3789,7 @@ def _mod_content_repo(BaseRepository, clock, connection):
             )
             return int(connection.scalar("SELECT changes()", default=0) or 0)
     return SimpleNamespace(
+        AnnouncementRepository=AnnouncementRepository,
         ResourceRepository=ResourceRepository,
         DiscussionRepository=DiscussionRepository,
         ReplyRepository=ReplyRepository,
@@ -3826,6 +4007,152 @@ def _mod_audit_repo(BaseRepository, connection):
     return SimpleNamespace(
         AuditRepository=AuditRepository,
         SettingRepository=SettingRepository,
+    )
+
+
+# ======================================================================
+# 模块：backend/services/search_service.py
+# ======================================================================
+def _mod_search_service(connection, permissions):
+    """全局搜索：一个关键词同时搜课程、作业、资料、讨论、公告。
+
+    按角色限制可见范围：学生只看已选课程，教师只看自己的课，管理员全站。
+    SQL 统一用「条件 + 排序 + 限制」三段式拼接，避免把 AND 拼到 ORDER BY 后面。
+    """
+
+
+    from typing import Any
+
+
+    MAX_PER_TYPE = 10
+
+
+    def _scope_course_ids(viewer: dict[str, Any]) -> list[int] | None:
+        """返回可见课程 id；None 表示不限制（管理员）。"""
+        role = viewer["role"]
+        if role == permissions.ROLE_ADMIN:
+            return None
+        if role == permissions.ROLE_TEACHER:
+            rows = connection.query_all(
+                "SELECT id FROM courses WHERE teacher_id = ?", (int(viewer["id"]),)
+            )
+            return [int(row["id"]) for row in rows]
+        rows = connection.query_all(
+            """SELECT DISTINCT cl.course_id
+                 FROM enrollments e JOIN classes cl ON cl.id = e.class_id
+                WHERE e.student_id = ? AND e.status = 'active'""",
+            (int(viewer["id"]),),
+        )
+        return [int(row["course_id"]) for row in rows]
+
+
+    def _query(base: str, conditions: list[str], params: list[Any],
+               scope_col: str | None, scope: list[int] | None,
+               order: str) -> list[dict[str, Any]]:
+        """拼出 SELECT：base 已含 FROM/JOIN，conditions 为 WHERE 片段。"""
+        conds = list(conditions)
+        args = list(params)
+        if scope is not None and scope_col:
+            if not scope:
+                return []
+            conds.append(f"{scope_col} IN ({','.join('?' for _ in scope)})")
+            args.extend(scope)
+        sql = base
+        if conds:
+            sql += " WHERE " + " AND ".join(conds)
+        sql += f" ORDER BY {order} LIMIT ?"
+        args.append(MAX_PER_TYPE)
+        return connection.query_all(sql, tuple(args))
+
+
+    def global_search(viewer: dict[str, Any], keyword: str) -> dict[str, Any]:
+        keyword = (keyword or "").strip()[:64]
+        empty = {
+            "keyword": keyword,
+            "total": 0,
+            "courses": [],
+            "assignments": [],
+            "resources": [],
+            "discussions": [],
+            "announcements": [],
+        }
+        if not keyword:
+            return empty
+
+        like = f"%{keyword}%"
+        scope = _scope_course_ids(viewer)
+        if scope is not None and not scope:
+            return empty
+
+        courses = _query(
+            """SELECT c.id, c.code, c.name, c.term, u.real_name AS teacher_name
+                 FROM courses c LEFT JOIN users u ON u.id = c.teacher_id""",
+            ["(c.name LIKE ? OR c.code LIKE ?)", "c.status = 'active'"],
+            [like, like],
+            "c.id",
+            scope,
+            "c.id DESC",
+        )
+
+        assignments = _query(
+            """SELECT a.id, a.title, a.deadline, a.class_id, cl.name AS class_name,
+                      c.name AS course_name
+                 FROM assignments a
+                 JOIN classes cl ON cl.id = a.class_id
+                 JOIN courses c ON c.id = cl.course_id""",
+            ["a.title LIKE ?", "a.status <> 'draft'"],
+            [like],
+            "cl.course_id",
+            scope,
+            "a.id DESC",
+        )
+
+        resources = _query(
+            """SELECT r.id, r.title, r.filename, r.course_id, c.name AS course_name
+                 FROM resources r JOIN courses c ON c.id = r.course_id""",
+            ["(r.title LIKE ? OR r.filename LIKE ?)"],
+            [like, like],
+            "r.course_id",
+            scope,
+            "r.id DESC",
+        )
+
+        discussions = _query(
+            """SELECT d.id, d.title, d.course_id, c.name AS course_name,
+                      u.real_name AS author_name
+                 FROM discussions d
+                 JOIN courses c ON c.id = d.course_id
+                 LEFT JOIN users u ON u.id = d.author_id""",
+            ["d.title LIKE ?"],
+            [like],
+            "d.course_id",
+            scope,
+            "d.id DESC",
+        )
+
+        announcements = _query(
+            """SELECT a.id, a.title, a.course_id, c.name AS course_name, a.created_at
+                 FROM announcements a JOIN courses c ON c.id = a.course_id""",
+            ["a.title LIKE ?"],
+            [like],
+            "a.course_id",
+            scope,
+            "a.id DESC",
+        )
+
+        return {
+            "keyword": keyword,
+            "total": len(courses) + len(assignments) + len(resources)
+            + len(discussions) + len(announcements),
+            "courses": courses,
+            "assignments": assignments,
+            "resources": resources,
+            "discussions": discussions,
+            "announcements": announcements,
+        }
+    return SimpleNamespace(
+        MAX_PER_TYPE=MAX_PER_TYPE,
+        global_search=global_search,
     )
 
 
@@ -4197,6 +4524,136 @@ def _mod_notification_service(NotificationRepository, UserRepository, permission
         mark_all_read=mark_all_read,
         clear_read=clear_read,
         broadcast=broadcast,
+    )
+
+
+# ======================================================================
+# 模块：backend/services/announcement_service.py
+# ======================================================================
+def _mod_announcement_service(AnnouncementRepository, AuditRepository, ClassRepository, CourseRepository, EnrollmentRepository, NotFoundError, notify_many, permissions, validators):
+    """课程公告。
+
+    教师发公告，学生进课程或首页能看到；发布时顺带推一条站内通知。
+    """
+
+
+    from typing import Any
+
+
+    announcement_repo = AnnouncementRepository()
+    course_repo = CourseRepository()
+    class_repo = ClassRepository()
+    enroll_repo = EnrollmentRepository()
+    audit_repo = AuditRepository()
+
+
+    def _course_or_fail(course_id: int) -> dict[str, Any]:
+        course = course_repo.detail(course_id)
+        if course is None:
+            raise NotFoundError("课程不存在")
+        return course
+
+
+    def _assert_view(viewer: dict[str, Any], course: dict[str, Any]) -> None:
+        class_ids = {int(item["id"]) for item in class_repo.of_course(int(course["id"]))}
+        enrolled = bool(class_ids & set(enroll_repo.class_ids_of_student(int(viewer["id"]))))
+        permissions.assert_can_view_course(viewer, course, enrolled=enrolled)
+
+
+    def list_for_course(viewer: dict[str, Any], course_id: int) -> list[dict[str, Any]]:
+        course = _course_or_fail(course_id)
+        _assert_view(viewer, course)
+        return announcement_repo.list_by_course(course_id)
+
+
+    def student_feed(student: dict[str, Any], limit: int = 20) -> list[dict[str, Any]]:
+        permissions.require_role(student, permissions.ROLE_STUDENT)
+        return announcement_repo.list_for_student(int(student["id"]), limit=limit)
+
+
+    def create(viewer: dict[str, Any], course_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        course = _course_or_fail(course_id)
+        permissions.assert_can_manage_course(viewer, course)
+
+        title = validators.required_str(payload, "title", min_len=2, max_len=120)
+        content = validators.optional_str(payload, "content", "", max_len=20000)
+        pinned = 1 if validators.to_bool(payload.get("pinned"), False) else 0
+
+        announcement_id = announcement_repo.insert(
+            {
+                "course_id": course_id,
+                "title": title,
+                "content": content,
+                "author_id": int(viewer["id"]),
+                "pinned": pinned,
+            }
+        )
+
+        students: list[int] = []
+        for class_row in class_repo.of_course(course_id):
+            students.extend(int(row["id"]) for row in class_repo.students(int(class_row["id"])))
+        if students:
+            notify_many(
+                students,
+                title=f"课程公告：{title}",
+                content=f"{course['name']} 发布了新公告",
+                category="announcement",
+                link=f"/courses/{course_id}",
+            )
+
+        audit_repo.log(
+            user_id=int(viewer["id"]),
+            username=viewer["username"],
+            action="create_announcement",
+            entity="announcement",
+            entity_id=announcement_id,
+            detail=f"{course['name']} / {title}",
+        )
+        return announcement_repo.detail(announcement_id) or {}
+
+
+    def update(viewer: dict[str, Any], announcement_id: int,
+               payload: dict[str, Any]) -> dict[str, Any]:
+        item = announcement_repo.find_or_fail(announcement_id, "公告不存在")
+        course = _course_or_fail(int(item["course_id"]))
+        permissions.assert_can_manage_course(viewer, course)
+
+        updates: dict[str, Any] = {}
+        if "title" in payload:
+            updates["title"] = validators.required_str(payload, "title", min_len=2, max_len=120)
+        if "content" in payload:
+            updates["content"] = validators.optional_str(payload, "content", "", max_len=20000)
+        if "pinned" in payload:
+            updates["pinned"] = 1 if validators.to_bool(payload.get("pinned")) else 0
+        if updates:
+            announcement_repo.update(announcement_id, updates)
+        return announcement_repo.detail(announcement_id) or {}
+
+
+    def delete(viewer: dict[str, Any], announcement_id: int) -> None:
+        item = announcement_repo.find_or_fail(announcement_id, "公告不存在")
+        course = _course_or_fail(int(item["course_id"]))
+        permissions.assert_can_manage_course(viewer, course)
+        announcement_repo.delete(announcement_id)
+        audit_repo.log(
+            user_id=int(viewer["id"]),
+            username=viewer["username"],
+            action="delete_announcement",
+            entity="announcement",
+            entity_id=announcement_id,
+            detail=item.get("title", ""),
+        )
+    return SimpleNamespace(
+        announcement_repo=announcement_repo,
+        course_repo=course_repo,
+        class_repo=class_repo,
+        enroll_repo=enroll_repo,
+        audit_repo=audit_repo,
+        list_for_course=list_for_course,
+        student_feed=student_feed,
+        create=create,
+        update=update,
+        delete=delete,
     )
 
 
@@ -8638,12 +9095,51 @@ def _mod_grade_api(Response, Router, grade_service, ok, permissions):
 # ======================================================================
 # 模块：backend/api/content_routes.py
 # ======================================================================
-def _mod_content_api(Response, Router, created, discussion_service, file_response, multipart, notification_service, ok, paginated, permissions, resource_service, validators):
+def _mod_content_api(Response, Router, announcement_service, created, discussion_service, file_response, multipart, notification_service, ok, paginated, permissions, resource_service, validators):
     """资料、讨论、通知接口。"""
 
 
 
     router = Router()
+
+
+    # ---------------------------------------------------------------- 公告
+
+
+    @router.get("/api/courses/<int:course_id>/announcements", summary="课程公告列表")
+    def list_announcements(req) -> Response:
+        user = permissions.require_login(req.user)
+        return ok(announcement_service.list_for_course(user, req.path_params["course_id"]))
+
+
+    @router.post("/api/courses/<int:course_id>/announcements",
+                 roles=("teacher", "admin"), summary="发布公告")
+    def create_announcement(req) -> Response:
+        user = permissions.require_teacher(req.user)
+        data = announcement_service.create(user, req.path_params["course_id"], req.json())
+        return created(data, "公告已发布")
+
+
+    @router.get("/api/my/announcements", roles=("student",), summary="我的课程公告")
+    def my_announcements(req) -> Response:
+        user = permissions.require_role(req.user, "student")
+        return ok(announcement_service.student_feed(user))
+
+
+    @router.put("/api/announcements/<int:announcement_id>", roles=("teacher", "admin"),
+                summary="更新公告")
+    def update_announcement(req) -> Response:
+        user = permissions.require_teacher(req.user)
+        data = announcement_service.update(user, req.path_params["announcement_id"], req.json())
+        return ok(data, "公告已更新")
+
+
+    @router.delete("/api/announcements/<int:announcement_id>", roles=("teacher", "admin"),
+                   summary="删除公告")
+    def delete_announcement(req) -> Response:
+        user = permissions.require_teacher(req.user)
+        announcement_service.delete(user, req.path_params["announcement_id"])
+        return ok(None, "公告已删除")
 
 
     # ---------------------------------------------------------------- 资料
@@ -8788,6 +9284,11 @@ def _mod_content_api(Response, Router, created, discussion_service, file_respons
         return ok({"sent": count}, f"已发送 {count} 条")
     return SimpleNamespace(
         router=router,
+        list_announcements=list_announcements,
+        create_announcement=create_announcement,
+        my_announcements=my_announcements,
+        update_announcement=update_announcement,
+        delete_announcement=delete_announcement,
         list_resources=list_resources,
         upload_resource=upload_resource,
         download_resource=download_resource,
@@ -8864,9 +9365,19 @@ def _mod_report_api(AuditRepository, Response, Router, ok, paginated, permission
 # ======================================================================
 # 模块：backend/api/system_routes.py
 # ======================================================================
-def _mod_system_api(AuditRepository, Response, Router, SettingRepository, clock, config, ok, permissions, validators):
+def _mod_system_api(AuditRepository, Response, Router, SettingRepository, backup_service, clock, config, connection, errors, file_response, ok, permissions, search_service, validators):
     """系统级接口：健康检查、元信息、设置、接口清单。"""
 
+
+
+
+    _app_ref = None
+
+
+    def bind_application(app) -> None:
+        """由 app.py 在装配完成后注入，供 /api/routes 使用。"""
+        global _app_ref
+        _app_ref = app
 
 
     router = Router()
@@ -8876,7 +9387,6 @@ def _mod_system_api(AuditRepository, Response, Router, SettingRepository, clock,
 
     @router.get("/api/health", auth=False, summary="健康检查")
     def health(req) -> Response:
-        from backend.db import connection
 
         db_ok = True
         try:
@@ -8910,9 +9420,10 @@ def _mod_system_api(AuditRepository, Response, Router, SettingRepository, clock,
 
     @router.get("/api/routes", summary="接口清单（开发用）")
     def routes(req) -> Response:
-        from backend.app import application  # 延迟导入，避免循环
 
-        return ok(application.describe_routes())
+        if _app_ref is None:
+            return ok({"total": 0, "routes": []})
+        return ok(_app_ref.describe_routes())
 
 
     @router.get("/api/settings", roles=("admin",), summary="系统设置")
@@ -8952,11 +9463,80 @@ def _mod_system_api(AuditRepository, Response, Router, SettingRepository, clock,
     @router.post("/api/system/vacuum", roles=("admin",), summary="整理数据库")
     def vacuum(req) -> Response:
         permissions.require_admin(req.user)
-        from backend.db import connection
 
         connection.get_connection().execute("VACUUM")
         return ok({"ok": True, "at": clock.now_iso()}, "数据库已整理")
+
+
+    @router.get("/api/search", summary="全局搜索")
+    def search(req) -> Response:
+
+        user = permissions.require_login(req.user)
+        keyword = req.str_param("q") or req.str_param("keyword")
+        return ok(search_service.global_search(user, keyword))
+
+
+    @router.post("/api/system/backup", roles=("admin",), summary="创建数据备份")
+    def create_backup(req) -> Response:
+        admin = permissions.require_admin(req.user)
+
+        payload = req.json()
+        note = validators.optional_str(payload, "note", "", max_len=40)
+        info = backup_service.create_backup(note)
+        audit_repo.log(
+            user_id=int(admin["id"]),
+            username=admin["username"],
+            action="create_backup",
+            entity="backup",
+            detail=info["filename"],
+        )
+        return ok(info, "备份已创建")
+
+
+    @router.get("/api/system/backups", roles=("admin",), summary="备份列表")
+    def list_backups(req) -> Response:
+        permissions.require_admin(req.user)
+
+        return ok({"items": backup_service.list_backups(), "stats": backup_service.stats()})
+
+
+    @router.get("/api/system/backups/<str:filename>/download", roles=("admin",),
+                summary="下载备份")
+    def download_backup(req) -> Response:
+        permissions.require_admin(req.user)
+
+        path = backup_service.resolve_backup(req.path_params["filename"])
+        return file_response(path, download_name=path.name)
+
+
+    @router.delete("/api/system/backups/<str:filename>", roles=("admin",),
+                   summary="删除备份")
+    def delete_backup(req) -> Response:
+        permissions.require_admin(req.user)
+
+        backup_service.delete_backup(req.path_params["filename"])
+        return ok(None, "备份已删除")
+
+
+    @router.post("/api/system/backups/<str:filename>/restore", roles=("admin",),
+                 summary="用备份恢复数据")
+    def restore_backup(req) -> Response:
+        admin = permissions.require_admin(req.user)
+
+        payload = req.json()
+        if not validators.to_bool(payload.get("confirm"), False):
+            raise errors.ValidationError("恢复数据需要传 confirm=true 明确确认")
+        result = backup_service.restore_backup(req.path_params["filename"])
+        audit_repo.log(
+            user_id=int(admin["id"]),
+            username=admin["username"],
+            action="restore_backup",
+            entity="backup",
+            detail=req.path_params["filename"],
+        )
+        return ok(result, "数据已恢复，建议重新登录")
     return SimpleNamespace(
+        bind_application=bind_application,
         router=router,
         setting_repo=setting_repo,
         audit_repo=audit_repo,
@@ -8967,6 +9547,12 @@ def _mod_system_api(AuditRepository, Response, Router, SettingRepository, clock,
         update_settings=update_settings,
         audit_actions=audit_actions,
         vacuum=vacuum,
+        search=search,
+        create_backup=create_backup,
+        list_backups=list_backups,
+        download_backup=download_backup,
+        delete_backup=delete_backup,
+        restore_backup=restore_backup,
     )
 
 
@@ -8984,6 +9570,7 @@ permissions = _mod_permissions(ForbiddenError=errors.ForbiddenError, Unauthorize
 response_lib = _mod_response_lib(AppError=errors.AppError)
 static_lib = _mod_static_lib(STATIC_CACHE_SECONDS=config.STATIC_CACHE_SECONDS, ForbiddenError=errors.ForbiddenError, NotFoundError=errors.NotFoundError, Response=response_lib.Response)
 connection = _mod_connection(config=config)
+backup_service = _mod_backup_service(config=config, clock=clock, NotFoundError=errors.NotFoundError, ValidationError=errors.ValidationError, connection=connection)
 migrations = _mod_migrations(config=config, clock=clock, connection=connection)
 base_repo = _mod_base_repo(clock=clock, NotFoundError=errors.NotFoundError, ValidationError=errors.ValidationError, connection=connection)
 users_repo = _mod_users_repo(clock=clock, connection=connection, BaseRepository=base_repo.BaseRepository)
@@ -8994,8 +9581,10 @@ attendance_repo = _mod_attendance_repo(clock=clock, connection=connection, BaseR
 content_repo = _mod_content_repo(clock=clock, connection=connection, BaseRepository=base_repo.BaseRepository)
 grades_repo = _mod_grades_repo(connection=connection, BaseRepository=base_repo.BaseRepository)
 audit_repo = _mod_audit_repo(connection=connection, BaseRepository=base_repo.BaseRepository)
+search_service = _mod_search_service(permissions=permissions, connection=connection)
 auth_service = _mod_auth_service(config=config, clock=clock, ids=ids, permissions=permissions, security=security, ForbiddenError=errors.ForbiddenError, RateLimitError=errors.RateLimitError, UnauthorizedError=errors.UnauthorizedError, ValidationError=errors.ValidationError, AuditRepository=audit_repo.AuditRepository, LoginAttemptRepository=users_repo.LoginAttemptRepository, SessionRepository=users_repo.SessionRepository, UserRepository=users_repo.UserRepository)
 notification_service = _mod_notification_service(permissions=permissions, NotificationRepository=content_repo.NotificationRepository, UserRepository=users_repo.UserRepository)
+announcement_service = _mod_announcement_service(permissions=permissions, validators=validators, NotFoundError=errors.NotFoundError, AuditRepository=audit_repo.AuditRepository, AnnouncementRepository=content_repo.AnnouncementRepository, ClassRepository=courses_repo.ClassRepository, CourseRepository=courses_repo.CourseRepository, EnrollmentRepository=courses_repo.EnrollmentRepository, notify_many=notification_service.notify_many)
 user_service = _mod_user_service(config=config, clock=clock, permissions=permissions, security=security, validators=validators, ConflictError=errors.ConflictError, NotFoundError=errors.NotFoundError, ValidationError=errors.ValidationError, AuditRepository=audit_repo.AuditRepository, SessionRepository=users_repo.SessionRepository, UserRepository=users_repo.UserRepository, auth_service=auth_service)
 course_service = _mod_course_service(config=config, clock=clock, ids=ids, permissions=permissions, validators=validators, ConflictError=errors.ConflictError, ForbiddenError=errors.ForbiddenError, NotFoundError=errors.NotFoundError, ValidationError=errors.ValidationError, AuditRepository=audit_repo.AuditRepository, ClassRepository=courses_repo.ClassRepository, CourseRepository=courses_repo.CourseRepository, EnrollmentRepository=courses_repo.EnrollmentRepository, UserRepository=users_repo.UserRepository)
 assignment_service = _mod_assignment_service(config=config, clock=clock, permissions=permissions, validators=validators, ConflictError=errors.ConflictError, ForbiddenError=errors.ForbiddenError, NotFoundError=errors.NotFoundError, AssignmentRepository=assignments_repo.AssignmentRepository, SubmissionRepository=assignments_repo.SubmissionRepository, AuditRepository=audit_repo.AuditRepository, ClassRepository=courses_repo.ClassRepository, EnrollmentRepository=courses_repo.EnrollmentRepository, UserRepository=users_repo.UserRepository, notify_class=notification_service.notify_class)
@@ -9017,9 +9606,9 @@ assignment_api = _mod_assignment_api(permissions=permissions, validators=validat
 quiz_api = _mod_quiz_api(permissions=permissions, validators=validators, Response=response_lib.Response, created=response_lib.created, ok=response_lib.ok, Router=router_lib.Router, quiz_service=quiz_service)
 attendance_api = _mod_attendance_api(permissions=permissions, validators=validators, Response=response_lib.Response, created=response_lib.created, ok=response_lib.ok, Router=router_lib.Router, attendance_service=attendance_service)
 grade_api = _mod_grade_api(permissions=permissions, Response=response_lib.Response, ok=response_lib.ok, Router=router_lib.Router, grade_service=grade_service)
-content_api = _mod_content_api(permissions=permissions, validators=validators, multipart=multipart_lib, Response=response_lib.Response, created=response_lib.created, file_response=response_lib.file_response, ok=response_lib.ok, paginated=response_lib.paginated, Router=router_lib.Router, discussion_service=discussion_service, notification_service=notification_service, resource_service=resource_service)
+content_api = _mod_content_api(permissions=permissions, validators=validators, multipart=multipart_lib, Response=response_lib.Response, created=response_lib.created, file_response=response_lib.file_response, ok=response_lib.ok, paginated=response_lib.paginated, Router=router_lib.Router, announcement_service=announcement_service, discussion_service=discussion_service, notification_service=notification_service, resource_service=resource_service)
 report_api = _mod_report_api(permissions=permissions, validators=validators, Response=response_lib.Response, ok=response_lib.ok, paginated=response_lib.paginated, Router=router_lib.Router, AuditRepository=audit_repo.AuditRepository, statistics_service=statistics_service)
-system_api = _mod_system_api(config=config, clock=clock, permissions=permissions, validators=validators, Response=response_lib.Response, ok=response_lib.ok, Router=router_lib.Router, AuditRepository=audit_repo.AuditRepository, SettingRepository=audit_repo.SettingRepository)
+system_api = _mod_system_api(config=config, clock=clock, errors=errors, permissions=permissions, validators=validators, Response=response_lib.Response, file_response=response_lib.file_response, ok=response_lib.ok, backup_service=backup_service, search_service=search_service, Router=router_lib.Router, AuditRepository=audit_repo.AuditRepository, SettingRepository=audit_repo.SettingRepository, connection=connection)
 
 # ======================================================================
 # 应用装配：把各模块的 router 合并，处理认证 / 静态资源 / 错误
@@ -9035,6 +9624,7 @@ class Application:
             attendance_api, grade_api, content_api, report_api, system_api,
         ):
             self.router.include(module.router)
+        system_api.bind_application(self)
 
     def authenticate(self, request) -> None:
         token = request.bearer_token or request.header("x-auth-token")

@@ -9,6 +9,41 @@ from backend.db import connection
 from backend.repositories.base import BaseRepository
 
 
+class AnnouncementRepository(BaseRepository):
+    """课程公告。"""
+
+    table = "announcements"
+    writable = ("course_id", "title", "content", "author_id", "pinned")
+
+    BASE_SELECT = """
+        SELECT a.*, u.real_name AS author_name, c.name AS course_name
+          FROM announcements a
+          LEFT JOIN users u ON u.id = a.author_id
+          LEFT JOIN courses c ON c.id = a.course_id
+    """
+
+    def list_by_course(self, course_id: int, limit: int = 50) -> list[dict[str, Any]]:
+        return connection.query_all(
+            self.BASE_SELECT
+            + " WHERE a.course_id = ? ORDER BY a.pinned DESC, a.created_at DESC, a.id DESC LIMIT ?",
+            (course_id, limit),
+        )
+
+    def detail(self, announcement_id: int) -> dict[str, Any] | None:
+        return connection.query_one(self.BASE_SELECT + " WHERE a.id = ?", (announcement_id,))
+
+    def list_for_student(self, student_id: int, limit: int = 20) -> list[dict[str, Any]]:
+        return connection.query_all(
+            self.BASE_SELECT
+            + """ WHERE a.course_id IN (
+                      SELECT cl.course_id FROM enrollments e
+                        JOIN classes cl ON cl.id = e.class_id
+                       WHERE e.student_id = ? AND e.status = 'active')
+                  ORDER BY a.created_at DESC, a.id DESC LIMIT ?""",
+            (student_id, limit),
+        )
+
+
 class ResourceRepository(BaseRepository):
     table = "resources"
     writable = (

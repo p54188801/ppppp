@@ -15,7 +15,7 @@ import re
 import sys
 from pathlib import Path
 
-SRC = Path(r"D:\deepseek\projects\eduflow")
+SRC = Path(r"D:\EduFlow")
 OUT = Path(r"D:\EduFlow\eduflow_all.py")
 
 # (命名空间变量名, 相对路径)  —— 顺序即依赖顺序
@@ -30,6 +30,7 @@ MODULES: list[tuple[str, str]] = [
     ("response_lib", "backend/http/response.py"),
     ("static_lib", "backend/http/static.py"),
     ("connection", "backend/db/connection.py"),
+    ("backup_service", "backend/services/backup_service.py"),
     ("migrations", "backend/db/migrations.py"),
     ("base_repo", "backend/repositories/base.py"),
     ("users_repo", "backend/repositories/users.py"),
@@ -40,8 +41,10 @@ MODULES: list[tuple[str, str]] = [
     ("content_repo", "backend/repositories/content.py"),
     ("grades_repo", "backend/repositories/grades.py"),
     ("audit_repo", "backend/repositories/audit.py"),
+    ("search_service", "backend/services/search_service.py"),
     ("auth_service", "backend/services/auth_service.py"),
     ("notification_service", "backend/services/notification_service.py"),
+    ("announcement_service", "backend/services/announcement_service.py"),
     ("user_service", "backend/services/user_service.py"),
     ("course_service", "backend/services/course_service.py"),
     ("assignment_service", "backend/services/assignment_service.py"),
@@ -279,6 +282,7 @@ class Application:
             attendance_api, grade_api, content_api, report_api, system_api,
         ):
             self.router.include(module.router)
+        system_api.bind_application(self)
 
     def authenticate(self, request) -> None:
         token = request.bearer_token or request.header("x-auth-token")

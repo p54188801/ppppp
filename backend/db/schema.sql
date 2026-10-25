@@ -365,3 +365,19 @@ CREATE TABLE IF NOT EXISTS system_settings (
     value      TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+-- ---------------------------------------------------------------------
+-- 课程公告
+-- ---------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS announcements (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    course_id  INTEGER NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+    title      TEXT    NOT NULL,
+    content    TEXT    NOT NULL DEFAULT '',
+    author_id  INTEGER NOT NULL REFERENCES users(id),
+    pinned     INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT    NOT NULL,
+    updated_at TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_announcements_course ON announcements(course_id);

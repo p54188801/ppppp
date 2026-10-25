@@ -15,7 +15,7 @@ from backend.core import clock
 from backend.db import connection
 
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
-CURRENT_VERSION = 1
+CURRENT_VERSION = 2
 
 
 def _read_schema() -> str:
@@ -35,8 +35,28 @@ def _migrate_v1(conn: sqlite3.Connection) -> None:
     conn.executescript(_read_schema())
 
 
+def _migrate_v2(conn: sqlite3.Connection) -> None:
+    """v1 -> v2：新增课程公告表（幂等）。"""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS announcements (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            course_id  INTEGER NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+            title      TEXT    NOT NULL,
+            content    TEXT    NOT NULL DEFAULT '',
+            author_id  INTEGER NOT NULL REFERENCES users(id),
+            pinned     INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT    NOT NULL,
+            updated_at TEXT    NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_announcements_course ON announcements(course_id);
+        """
+    )
+
+
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (1, _migrate_v1),
+    (2, _migrate_v2),
 ]
 
 
@@ -97,6 +117,7 @@ def reset_db() -> None:
         "resources",
         "discussion_replies",
         "discussions",
+        "announcements",
         "notifications",
         "grade_items",
         "grade_rules",

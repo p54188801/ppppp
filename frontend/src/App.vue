@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useUiStore } from '@/stores/ui'
@@ -13,7 +13,69 @@ const router = useRouter()
 const unread = ref(0)
 let timer = null
 
+// 顶栏全局搜索关键词
+const topSearch = ref('')
+
+const contentRef = ref(null)
+
 const isLoginPage = computed(() => route.meta.public === true)
+
+// ---------------------------------------------------------------------------
+// 滚动：滚轮走浏览器原生行为，这里补上键盘控制
+// ---------------------------------------------------------------------------
+
+const TYPING_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT'])
+
+function isTyping(target) {
+  if (!target) return false
+  if (TYPING_TAGS.has(target.tagName)) return true
+  return target.isContentEditable === true
+}
+
+function scrollContent(delta) {
+  const el = contentRef.value
+  if (!el) return
+  el.scrollBy({ top: delta, behavior: 'smooth' })
+}
+
+function onKeydown(event) {
+  if (event.ctrlKey || event.altKey || event.metaKey) return
+  if (isTyping(event.target)) return
+  // 焦点在按钮/链接上时，空格和回车应该触发它们自己的行为
+  const tag = event.target?.tagName
+  if ((tag === 'BUTTON' || tag === 'A') && (event.key === ' ' || event.key === 'Enter')) return
+
+  const el = contentRef.value
+  if (!el) return
+  const page = el.clientHeight * 0.85
+
+  switch (event.key) {
+    case 'ArrowDown':
+      scrollContent(80)
+      break
+    case 'ArrowUp':
+      scrollContent(-80)
+      break
+    case 'PageDown':
+      scrollContent(page)
+      break
+    case 'PageUp':
+      scrollContent(-page)
+      break
+    case ' ':
+      scrollContent(event.shiftKey ? -page : page)
+      break
+    case 'Home':
+      el.scrollTo({ top: 0, behavior: 'smooth' })
+      break
+    case 'End':
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+      break
+    default:
+      return
+  }
+  event.preventDefault()
+}
 
 const navItems = computed(() => {
   const role = auth.user?.role
@@ -36,6 +98,7 @@ const navItems = computed(() => {
     items.push(
       { name: 'courses', label: '课程管理', icon: '▤', group: '管理' },
       { name: 'admin-users', label: '用户管理', icon: '☷', group: '管理' },
+      { name: 'admin-backup', label: '数据备份', icon: '⛁', group: '管理' },
     )
   }
   items.push({ name: 'notifications', label: '通知', icon: '✦', group: '其他' })
@@ -77,13 +140,35 @@ function go(name) {
   router.push({ name })
 }
 
+/** 顶栏搜索：回车跳转搜索页，关键词放在 query 里便于分享与回退 */
+function handleTopSearch() {
+  const keyword = topSearch.value.trim()
+  if (!keyword) {
+    ui.error('请输入搜索关键词')
+    return
+  }
+  router.push({ name: 'search', query: { q: keyword } })
+}
+
+// 站在搜索页时，让顶栏输入框与地址栏关键词保持一致
+watch(
+  () => route.query.q,
+  (value) => {
+    if (route.name === 'search' && typeof value === 'string') topSearch.value = value
+  },
+)
+
 onMounted(() => {
   refreshUnread()
+  // 直接刷新/回退到搜索页时，顶栏也要带上当前关键词
+  if (route.name === 'search' && typeof route.query.q === 'string') topSearch.value = route.query.q
   timer = window.setInterval(refreshUnread, 30000)
+  window.addEventListener('keydown', onKeydown)
 })
 
 onUnmounted(() => {
   if (timer) window.clearInterval(timer)
+  window.removeEventListener('keydown', onKeydown)
 })
 </script>
 
@@ -128,6 +213,15 @@ onUnmounted(() => {
       <header class="topbar">
         <div class="topbar-title">{{ pageTitle }}</div>
         <div class="topbar-right">
+          <input
+            v-model="topSearch"
+            class="input"
+            style="width: 220px; background: var(--bg-soft)"
+            placeholder="搜索课程 / 作业 / 资料…"
+            maxlength="64"
+            aria-label="全局搜索"
+            @keyup.enter="handleTopSearch"
+          />
           <div class="nav-item" style="padding: 6px 10px" @click="go('notifications')">
             <span class="nav-icon">✦</span>
             <span>通知</span>
@@ -147,7 +241,7 @@ onUnmounted(() => {
         </div>
       </header>
 
-      <section class="content">
+      <section class="content" ref="contentRef" tabindex="0">
         <router-view v-slot="{ Component }">
           <component :is="Component" />
         </router-view>

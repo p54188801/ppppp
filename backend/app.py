@@ -57,6 +57,9 @@ class Application:
         ):
             self.router.include(module.router)
 
+        # 让 /api/routes 能拿到装配好的应用
+        system_routes.bind_application(self)
+
     # -- 认证 -------------------------------------------------------------
 
     def authenticate(self, request: Request) -> None:

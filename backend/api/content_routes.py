@@ -6,9 +6,53 @@ from backend.core import permissions, validators
 from backend.http import multipart
 from backend.http.response import Response, created, file_response, ok, paginated
 from backend.http.router import Router
-from backend.services import discussion_service, notification_service, resource_service
+from backend.services import ( 
+    announcement_service,
+    discussion_service,
+    notification_service,
+    resource_service,
+)
 
 router = Router()
+
+
+# ---------------------------------------------------------------- 公告
+
+
+@router.get("/api/courses/<int:course_id>/announcements", summary="课程公告列表")
+def list_announcements(req) -> Response:
+    user = permissions.require_login(req.user)
+    return ok(announcement_service.list_for_course(user, req.path_params["course_id"]))
+
+
+@router.post("/api/courses/<int:course_id>/announcements",
+             roles=("teacher", "admin"), summary="发布公告")
+def create_announcement(req) -> Response:
+    user = permissions.require_teacher(req.user)
+    data = announcement_service.create(user, req.path_params["course_id"], req.json())
+    return created(data, "公告已发布")
+
+
+@router.get("/api/my/announcements", roles=("student",), summary="我的课程公告")
+def my_announcements(req) -> Response:
+    user = permissions.require_role(req.user, "student")
+    return ok(announcement_service.student_feed(user))
+
+
+@router.put("/api/announcements/<int:announcement_id>", roles=("teacher", "admin"),
+            summary="更新公告")
+def update_announcement(req) -> Response:
+    user = permissions.require_teacher(req.user)
+    data = announcement_service.update(user, req.path_params["announcement_id"], req.json())
+    return ok(data, "公告已更新")
+
+
+@router.delete("/api/announcements/<int:announcement_id>", roles=("teacher", "admin"),
+               summary="删除公告")
+def delete_announcement(req) -> Response:
+    user = permissions.require_teacher(req.user)
+    announcement_service.delete(user, req.path_params["announcement_id"])
+    return ok(None, "公告已删除")
 
 
 # ---------------------------------------------------------------- 资料

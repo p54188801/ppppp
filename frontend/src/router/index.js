@@ -79,10 +79,22 @@ const routes = [
     meta: { title: '通知' },
   },
   {
+    path: '/search',
+    name: 'search',
+    component: () => import('@/views/SearchView.vue'),
+    meta: { title: '搜索' },
+  },
+  {
     path: '/admin/users',
     name: 'admin-users',
     component: () => import('@/views/AdminUsersView.vue'),
     meta: { title: '用户管理', roles: ['admin'] },
+  },
+  {
+    path: '/admin/backups',
+    name: 'admin-backup',
+    component: () => import('@/views/AdminBackupView.vue'),
+    meta: { title: '数据备份', roles: ['admin'] },
   },
   {
     path: '/profile',
