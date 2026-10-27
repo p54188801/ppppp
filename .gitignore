@@ -30,3 +30,7 @@ docs/ALL_CODE.md
 .vscode/
 .DS_Store
 Thumbs.db
+
+tools/cloudflared.exe
+data/
+

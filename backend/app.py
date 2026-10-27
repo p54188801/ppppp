@@ -94,6 +94,10 @@ class Application:
                 return Response(status=204, body=b"", content_type="text/plain; charset=utf-8")
 
             self.authenticate(request)
+            if request.user and request.user.get("must_change_password"):
+                allowed = ("/api/auth/me", "/api/auth/password", "/api/auth/logout", "/api/meta", "/api/health")
+                if request.path not in allowed:
+                    raise ForbiddenError("请先修改初始密码", code="password_change_required")
             response = self._dispatch_api(request)
         except AppError as exc:
             logger.info("%s %s -> %s %s", request.method, request.path, exc.status, exc.message)

@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from backend.core import permissions, validators
-from backend.http.response import Response, ok
+from backend.http.response import Response, created, ok
 from backend.http.router import Router
-from backend.services import auth_service
+from backend.services import auth_service, registration_service
 
 router = Router()
 
@@ -61,3 +61,9 @@ def strength(req) -> Response:
     from backend.core.security import password_strength
 
     return ok(password_strength(password))
+
+@router.post("/api/auth/register", auth=False, summary="学生自助注册")
+def register(req) -> Response:
+    payload = req.json()
+    data = registration_service.register_student(payload, ip=req.client_ip)
+    return created(data, "注册成功，请登录")
