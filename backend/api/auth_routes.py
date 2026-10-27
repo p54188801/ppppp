@@ -65,5 +65,5 @@ def strength(req) -> Response:
 @router.post("/api/auth/register", auth=False, summary="学生自助注册")
 def register(req) -> Response:
     payload = req.json()
-    data = registration_service.register_student(payload, ip=req.client_ip)
+    data = registration_service.register(payload, ip=req.client_ip)
     return created(data, "注册成功，请登录")

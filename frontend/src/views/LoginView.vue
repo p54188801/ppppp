@@ -81,6 +81,10 @@ async function submit() {
         {{ auth.loading ? '登录中…' : '登 录' }}
       </button>
 
+      <div class="row" style="justify-content: center; margin-top: 14px">
+        <router-link class="small" :to="{ name: 'register' }">没有账号？立即注册</router-link>
+      </div>
+
       <div class="demo-accounts">
         <div class="row between">
           <b>演示账号（密码均为 Eduflow@2026）</b>
