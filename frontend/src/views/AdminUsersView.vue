@@ -76,6 +76,46 @@ function roleBadge(value) {
   return 'gray'
 }
 
+
+async function kickUser(user) {
+  const ok = await ui.confirm({
+    title: '强制下线',
+    message: `确定把 ${user.real_name}（${user.username}）踢下线吗？对方需要重新登录。`,
+    confirmText: '踢下线',
+  })
+  if (!ok) return
+  actingId.value = user.id
+  try {
+    const data = await api.post(`/api/users/${user.id}/kick`)
+    ui.success(`已下线，吊销 ${data.revoked} 个会话`)
+    await load()
+  } catch (error) {
+    ui.error(error.message)
+  } finally {
+    actingId.value = 0
+  }
+}
+
+async function cancelAccount(user) {
+  const ok = await ui.confirm({
+    title: '注销账号',
+    message: `确定注销 ${user.real_name}（${user.username}）吗？注销后该账号无法登录，数据仍保留。`,
+    confirmText: '确认注销',
+    danger: true,
+  })
+  if (!ok) return
+  actingId.value = user.id
+  try {
+    await api.post(`/api/users/${user.id}/cancel`)
+    ui.success('账号已注销')
+    await load()
+  } catch (error) {
+    ui.error(error.message)
+  } finally {
+    actingId.value = 0
+  }
+}
+
 async function load() {
   loading.value = true
   try {
@@ -341,7 +381,9 @@ onMounted(load)
             <td>
               <div class="row" style="gap: 6px">
                 <button class="btn sm ghost" @click="openEdit(user)">编辑</button>
-                <button
+                <button class="btn sm" :disabled="actingId === user.id" @click="kickUser(user)">下线</button>
+            <button class="btn sm danger" :disabled="actingId === user.id" @click="cancelAccount(user)">注销</button>
+            <button
                   class="btn sm"
                   :class="user.status === 'active' ? 'danger' : ''"
                   :disabled="actingId === user.id"

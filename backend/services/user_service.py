@@ -236,3 +236,37 @@ def overview() -> dict[str, Any]:
     counts["sessions_today"] = 0
     counts["updated_at"] = clock.now_iso()
     return counts
+
+def kick_user(user_id: int, *, operator: dict[str, Any]) -> dict[str, Any]:
+    """强制下线：吊销该用户所有会话，不影响账号状态。"""
+    user = user_repo.find_or_fail(user_id, "用户不存在")
+    if int(user["id"]) == int(operator["id"]):
+        raise ValidationError("不能把自己踢下线")
+    count = session_repo.revoke_all_for_user(user_id)
+    audit_repo.log(
+        user_id=int(operator["id"]),
+        username=operator["username"],
+        action="kick_user",
+        entity="user",
+        entity_id=user_id,
+        detail=f"强制下线 {user['username']}（吊销 {count} 个会话）",
+    )
+    return {"user_id": user_id, "revoked": count}
+
+
+def cancel_account(user_id: int, *, operator: dict[str, Any]) -> dict[str, Any]:
+    """注销账号：停用并吊销会话，数据保留（可由管理员恢复）。"""
+    user = user_repo.find_or_fail(user_id, "用户不存在")
+    if int(user["id"]) == int(operator["id"]):
+        raise ValidationError("不能注销自己的账号")
+    user_repo.set_status(user_id, "disabled")
+    session_repo.revoke_all_for_user(user_id)
+    audit_repo.log(
+        user_id=int(operator["id"]),
+        username=operator["username"],
+        action="cancel_account",
+        entity="user",
+        entity_id=user_id,
+        detail=f"注销账号 {user['username']}",
+    )
+    return {"user_id": user_id, "status": "disabled"}

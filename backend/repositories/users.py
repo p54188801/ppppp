@@ -29,10 +29,16 @@ class UserRepository(BaseRepository):
     )
 
     def by_username(self, username: str) -> dict[str, Any] | None:
-        return self.find_by(username=username)
+        """用户名不区分大小写（PPPPP 和 ppppp 视为同一个）。"""
+        return connection.query_one(
+            "SELECT * FROM users WHERE username = ? COLLATE NOCASE LIMIT 1",
+            (username,),
+        )
 
     def by_number(self, number: str) -> dict[str, Any] | None:
-        return self.find_by(number=number)
+        return connection.query_one(
+            "SELECT * FROM users WHERE number = ? COLLATE NOCASE LIMIT 1", (number,)
+        )
 
     def list_by_role(self, role: str, *, keyword: str = "",
                      limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:

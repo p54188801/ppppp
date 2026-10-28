@@ -88,3 +88,14 @@ def import_users(req) -> Response:
     default_role = validators.optional_str(payload, "default_role", "student", max_len=16)
     result = user_service.import_users(csv_text, default_role=default_role, operator=admin)
     return ok(result, f"导入完成：成功 {result['created']} 条，失败 {result['failed']} 条")
+
+@router.post("/api/users/<int:user_id>/kick", roles=("admin",), summary="强制下线")
+def kick_user(req) -> Response:
+    admin = permissions.require_admin(req.user)
+    return ok(user_service.kick_user(req.path_params["user_id"], operator=admin), "已强制下线")
+
+
+@router.post("/api/users/<int:user_id>/cancel", roles=("admin",), summary="注销账号")
+def cancel_account(req) -> Response:
+    admin = permissions.require_admin(req.user)
+    return ok(user_service.cancel_account(req.path_params["user_id"], operator=admin), "账号已注销")
