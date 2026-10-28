@@ -130,3 +130,9 @@ def delete_attachment(req) -> Response:
     user = permissions.require_role(req.user, "student")
     attachment_service.delete_file(user, req.path_params["file_id"])
     return ok(None, "已删除")
+
+@router.get("/api/assignments/<int:assignment_id>/progress",
+            roles=("teacher", "admin"), summary="提交进度与未交名单")
+def submission_progress(req) -> Response:
+    user = permissions.require_login(req.user)
+    return ok(assignment_service.submission_progress(user, req.path_params["assignment_id"]))

@@ -95,7 +95,9 @@ def create_assignment(payload: dict[str, Any],
 
 def update_assignment(assignment_id: int, payload: dict[str, Any],
                       operator: dict[str, Any]) -> dict[str, Any]:
-    assignment = assignment_repo.find_or_fail(assignment_id, "作业不存在")
+    assignment = assignment_repo.detail(assignment_id)
+    if assignment is None:
+        raise NotFoundError("作业不存在")
     detail = _class_or_fail(int(assignment["class_id"]))
     permissions.assert_can_manage_course(operator, detail)
 
@@ -167,7 +169,9 @@ def submit(viewer: dict[str, Any], assignment_id: int,
            payload: dict[str, Any]) -> dict[str, Any]:
     """学生提交作业。"""
     permissions.require_role(viewer, permissions.ROLE_STUDENT)
-    assignment = assignment_repo.find_or_fail(assignment_id, "作业不存在")
+    assignment = assignment_repo.detail(assignment_id)
+    if assignment is None:
+        raise NotFoundError("作业不存在")
     class_id = int(assignment["class_id"])
     if not enroll_repo.is_enrolled(class_id, int(viewer["id"])):
         raise ForbiddenError("未选修该课程")
@@ -256,7 +260,9 @@ def batch_grade(operator: dict[str, Any], assignment_id: int,
                 rows: list[dict[str, Any]]) -> dict[str, Any]:
     """批量打分：rows = [{submission_id, score, feedback}]。"""
     permissions.require_teacher(operator)
-    assignment = assignment_repo.find_or_fail(assignment_id, "作业不存在")
+    assignment = assignment_repo.detail(assignment_id)
+    if assignment is None:
+        raise NotFoundError("作业不存在")
     detail = _class_or_fail(int(assignment["class_id"]))
     permissions.assert_can_manage_course(operator, detail)
     full_score = float(assignment.get("full_score") or 100)
@@ -278,7 +284,9 @@ def batch_grade(operator: dict[str, Any], assignment_id: int,
 
 def list_submissions(operator: dict[str, Any], assignment_id: int) -> dict[str, Any]:
     permissions.require_teacher(operator)
-    assignment = assignment_repo.find_or_fail(assignment_id, "作业不存在")
+    assignment = assignment_repo.detail(assignment_id)
+    if assignment is None:
+        raise NotFoundError("作业不存在")
     detail = _class_or_fail(int(assignment["class_id"]))
     permissions.assert_can_manage_course(operator, detail)
     submissions = submission_repo.list_by_assignment(assignment_id)
@@ -294,7 +302,9 @@ def list_submissions(operator: dict[str, Any], assignment_id: int) -> dict[str, 
 
 
 def delete_assignment(operator: dict[str, Any], assignment_id: int) -> None:
-    assignment = assignment_repo.find_or_fail(assignment_id, "作业不存在")
+    assignment = assignment_repo.detail(assignment_id)
+    if assignment is None:
+        raise NotFoundError("作业不存在")
     detail = _class_or_fail(int(assignment["class_id"]))
     permissions.assert_can_manage_course(operator, detail)
     assignment_repo.delete(assignment_id)
@@ -306,3 +316,69 @@ def delete_assignment(operator: dict[str, Any], assignment_id: int) -> None:
         entity_id=assignment_id,
         detail=assignment["title"],
     )
+
+def submission_progress(user: dict[str, Any], assignment_id: int) -> dict[str, Any]:
+    """教师视角：谁交了、谁没交。"""
+    from backend.db import connection
+
+    assignment = assignment_repo.detail(assignment_id)
+    if assignment is None:
+        raise NotFoundError("作业不存在")
+    cls = connection.query_one(
+        """SELECT c.*, co.teacher_id FROM classes c
+             JOIN courses co ON co.id = c.course_id WHERE c.id = ?""",
+        (int(assignment["class_id"]),),
+    )
+    if cls is None:
+        raise NotFoundError("教学班不存在")
+    if user["role"] != permissions.ROLE_ADMIN and int(cls.get("teacher_id") or 0) != int(user["id"]):
+        raise ForbiddenError("只有任课教师可以查看")
+
+    students = connection.query_all(
+        """SELECT u.id, u.real_name, u.username, u.number
+             FROM enrollments e JOIN users u ON u.id = e.student_id
+            WHERE e.class_id = ? AND e.status = 'active'
+            ORDER BY u.number, u.id""",
+        (int(assignment["class_id"]),),
+    )
+    subs = connection.query_all(
+        """SELECT s.*, u.real_name, u.username, u.number
+             FROM submissions s JOIN users u ON u.id = s.student_id
+            WHERE s.assignment_id = ?""",
+        (assignment_id,),
+    )
+    by_student = {int(s["student_id"]): s for s in subs}
+
+    submitted, missing = [], []
+    for st in students:
+        sid = int(st["id"])
+        sub = by_student.get(sid)
+        item = {
+            "student_id": sid,
+            "real_name": st["real_name"],
+            "number": st.get("number") or "",
+            "username": st["username"],
+        }
+        if sub is None:
+            missing.append(item)
+        else:
+            item.update(
+                submission_id=sub["id"],
+                submitted_at=sub.get("submitted_at"),
+                status=sub.get("status"),
+                score=sub.get("score"),
+                late=bool(sub.get("late")),
+            )
+            submitted.append(item)
+
+    return {
+        "assignment_id": assignment_id,
+        "title": assignment["title"],
+        "class_name": cls["name"],
+        "total": len(students),
+        "submitted_count": len(submitted),
+        "missing_count": len(missing),
+        "graded_count": sum(1 for s in submitted if s.get("status") == "graded"),
+        "submitted": submitted,
+        "missing": missing,
+    }
