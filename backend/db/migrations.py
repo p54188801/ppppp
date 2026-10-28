@@ -15,7 +15,7 @@ from backend.core import clock
 from backend.db import connection
 
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
-CURRENT_VERSION = 4
+CURRENT_VERSION = 5
 
 
 def _read_schema() -> str:
@@ -126,11 +126,84 @@ def _migrate_v4(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_v5(conn: sqlite3.Connection) -> None:
+    """v4 -> v5：班级群、群消息、群作业、课程推荐。"""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS class_groups (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            name       TEXT NOT NULL UNIQUE,
+            teacher_id INTEGER REFERENCES users(id),
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS group_members (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_id  INTEGER NOT NULL REFERENCES class_groups(id) ON DELETE CASCADE,
+            user_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            role      TEXT NOT NULL,
+            joined_at TEXT NOT NULL,
+            UNIQUE (group_id, user_id)
+        );
+        CREATE TABLE IF NOT EXISTS group_messages (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_id    INTEGER NOT NULL REFERENCES class_groups(id) ON DELETE CASCADE,
+            sender_id   INTEGER NOT NULL REFERENCES users(id),
+            kind        TEXT NOT NULL DEFAULT 'text',
+            content     TEXT NOT NULL DEFAULT '',
+            file_name   TEXT,
+            stored_name TEXT,
+            size        INTEGER DEFAULT 0,
+            mime        TEXT,
+            ref_id      INTEGER,
+            created_at  TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_group_messages ON group_messages(group_id, id);
+        CREATE TABLE IF NOT EXISTS group_assignments (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_id   INTEGER NOT NULL REFERENCES class_groups(id) ON DELETE CASCADE,
+            title      TEXT NOT NULL,
+            content    TEXT NOT NULL DEFAULT '',
+            full_score REAL NOT NULL DEFAULT 100,
+            deadline   TEXT,
+            created_by INTEGER NOT NULL REFERENCES users(id),
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS group_submissions (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            assignment_id INTEGER NOT NULL REFERENCES group_assignments(id) ON DELETE CASCADE,
+            student_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            content       TEXT NOT NULL DEFAULT '',
+            file_name     TEXT,
+            stored_name   TEXT,
+            size          INTEGER DEFAULT 0,
+            mime          TEXT,
+            score         REAL,
+            feedback      TEXT,
+            graded_by     INTEGER,
+            graded_at     TEXT,
+            created_at    TEXT NOT NULL,
+            updated_at    TEXT NOT NULL,
+            UNIQUE (assignment_id, student_id)
+        );
+        CREATE TABLE IF NOT EXISTS course_offers (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            course_id  INTEGER NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+            status     TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE (user_id, course_id)
+        );
+        """
+    )
+
+
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (1, _migrate_v1),
     (2, _migrate_v2),
     (3, _migrate_v3),
     (4, _migrate_v4),
+    (5, _migrate_v5),
 ]
 
 
@@ -192,6 +265,12 @@ def reset_db() -> None:
         "discussion_replies",
         "discussions",
         "announcements",
+        "group_messages",
+        "group_submissions",
+        "group_assignments",
+        "group_members",
+        "course_offers",
+        "class_groups",
         "assignment_files",
         "task_progress",
         "tasks",

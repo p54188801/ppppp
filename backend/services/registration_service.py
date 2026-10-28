@@ -12,6 +12,7 @@ from backend.core import permissions, security, validators
 from backend.core.errors import ConflictError, ValidationError
 from backend.repositories.audit import AuditRepository
 from backend.repositories.users import UserRepository
+from backend.services import group_service
 
 user_repo = UserRepository()
 audit_repo = AuditRepository()
@@ -39,6 +40,8 @@ def register(payload: dict[str, Any], *, ip: str = "") -> dict[str, Any]:
     if role not in ALLOWED_ROLES:
         raise ValidationError("只能注册为学生或教师")
 
+    class_name = validators.required_str(payload, "class_name", min_len=2, max_len=64)
+
     if user_repo.by_number(number):
         raise ConflictError("该学号/工号已注册")
 
@@ -53,12 +56,20 @@ def register(payload: dict[str, Any], *, ip: str = "") -> dict[str, Any]:
             "role": role,
             "real_name": real_name,
             "number": number,
+            "class_name": class_name,
             "status": "active",
             "must_change_password": 0,
         }
     )
 
-    audit_repo.log(
+    joined_group = None
+    if class_name:
+        group = group_service.join_group_by_name(
+            {"id": user_id, "role": role, "username": username}, class_name
+        )
+        joined_group = {"id": int(group["id"]), "name": group["name"]}
+
+        audit_repo.log(
         user_id=user_id,
         username=username,
         action="self_register",
@@ -67,7 +78,14 @@ def register(payload: dict[str, Any], *, ip: str = "") -> dict[str, Any]:
         detail=f"{permissions.ROLE_LABELS.get(role, role)}自助注册（{ip}）",
         ip=ip,
     )
+    if role == permissions.ROLE_STUDENT:
+        try:
+            group_service.refresh_offers(user_repo.find(user_id) or {})
+        except Exception:  # noqa: BLE001
+            pass
+
     return {
+        "joined_group": joined_group,
         "user": {
             "id": user_id,
             "username": username,

@@ -22,6 +22,7 @@ const total = ref(0)
 const page = ref(1)
 const keyword = ref('')
 const actingId = ref(0)
+const offers = ref([])
 
 const showCreate = ref(false)
 const saving = ref(false)
@@ -39,6 +40,27 @@ function emptyForm() {
     category: '必修',
     term: '',
     description: '',
+  }
+}
+
+
+async function loadOffers() {
+  if (!auth.isStudent) return
+  try {
+    offers.value = await api.get('/api/my/course-offers')
+  } catch {
+    offers.value = []
+  }
+}
+
+async function respondOffer(offer, accept) {
+  try {
+    await api.post(`/api/course-offers/${offer.offer_id}/${accept ? 'accept' : 'reject'}`)
+    ui.success(accept ? `已加入《${offer.name}》` : '已忽略该推荐')
+    offers.value = offers.value.filter((o) => o.offer_id !== offer.offer_id)
+    if (accept) await load()
+  } catch (error) {
+    ui.error(error.message)
   }
 }
 
@@ -128,7 +150,10 @@ async function archiveCourse(course) {
   }
 }
 
-onMounted(load)
+onMounted(async () => {
+  await load()
+  await loadOffers()
+})
 </script>
 
 <template>
@@ -156,6 +181,30 @@ onMounted(load)
       </div>
     </div>
 
+
+    <div v-if="auth.isStudent && offers.length" class="card" style="margin-bottom: 16px">
+      <div class="card-title">
+        <span>为你推荐 · {{ offers.length }} 门</span>
+        <span class="faint small">按你的班级匹配，可接受或拒绝</span>
+      </div>
+      <div
+        v-for="offer in offers"
+        :key="offer.offer_id"
+        class="row between"
+        style="padding: 10px 0; border-bottom: 1px solid var(--border)"
+      >
+        <div>
+          <strong>{{ offer.name }}</strong>
+          <div class="faint small">
+            {{ offer.code }} · {{ offer.teacher_name }} · {{ offer.credits }} 学分
+          </div>
+        </div>
+        <div class="row" style="gap: 8px">
+          <button class="btn sm" @click="respondOffer(offer, false)">拒绝</button>
+          <button class="btn sm primary" @click="respondOffer(offer, true)">接受</button>
+        </div>
+      </div>
+    </div>
     <div v-if="loading" class="loading">正在加载课程…</div>
 
     <div v-else-if="!courses.length" class="empty">

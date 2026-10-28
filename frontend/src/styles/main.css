@@ -1151,3 +1151,24 @@ tbody tr:hover { background: #f8fbff; }
 /* 提示条下移，避免遮挡顶栏搜索框 */
 .toast-wrap { top: 72px; right: 22px; }
 .topbar .nav-item { border-radius: 10px; }
+
+/* 悬停 2 秒出现的功能说明 */
+.hover-tip {
+  position: fixed;
+  z-index: 400;
+  max-width: 240px;
+  padding: 8px 12px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #1d3557;
+  background: #fff;
+  border: 1px solid #dbe8f6;
+  border-radius: 10px;
+  box-shadow: 0 10px 24px rgba(63, 110, 180, 0.18);
+  pointer-events: none;
+  animation: tip-in 0.15s ease-out;
+}
+@keyframes tip-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}

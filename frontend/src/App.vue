@@ -81,6 +81,7 @@ function onKeydown(event) {
 const navItems = computed(() => {
   const role = auth.user?.role
   const items = [{ name: 'dashboard', label: '工作台', icon: '◈', group: '概览' }]
+  items.push({ name: 'group', label: '班级群', icon: '👥', group: '学习' })
   if (!role) return items
 
   if (role === 'student') {
@@ -167,17 +168,65 @@ watch(
   },
 )
 
+
+// ---------------------------------------------------------------------------
+// 悬停 2 秒显示功能说明
+// ---------------------------------------------------------------------------
+const hoverTip = ref({ show: false, text: '', x: 0, y: 0 })
+let hoverTimer = null
+
+const TIP_TEXT = {
+  登录: '输入账号密码进入系统',
+  注册: '新用户登记，学生和老师都能注册',
+  立即注册: '第一次使用请先注册账号',
+}
+
+function tipLabel(el) {
+  const explicit = el.getAttribute('data-tip')
+  if (explicit) return explicit
+  const text = (el.innerText || el.getAttribute('aria-label') || '').trim().replace(/\s+/g, ' ')
+  if (!text) return ''
+  if (text.length > 18) return ''
+  return TIP_TEXT[text] || `点击「${text}」`
+}
+
+function onHoverIn(event) {
+  const el = event.target.closest && event.target.closest('button, a, .nav-item')
+  if (!el) return
+  const label = tipLabel(el)
+  if (!label) return
+  const rect = el.getBoundingClientRect()
+  clearTimeout(hoverTimer)
+  hoverTimer = setTimeout(() => {
+    hoverTip.value = {
+      show: true,
+      text: label,
+      x: Math.min(rect.left, window.innerWidth - 260),
+      y: rect.bottom + 8,
+    }
+  }, 2000)
+}
+
+function onHoverOut() {
+  clearTimeout(hoverTimer)
+  hoverTip.value.show = false
+}
+
 onMounted(() => {
   refreshUnread()
   // 直接刷新/回退到搜索页时，顶栏也要带上当前关键词
   if (route.name === 'search' && typeof route.query.q === 'string') topSearch.value = route.query.q
   timer = window.setInterval(refreshUnread, 30000)
   window.addEventListener('keydown', onKeydown)
+  window.addEventListener('mouseover', onHoverIn)
+  window.addEventListener('mouseout', onHoverOut)
 })
 
 onUnmounted(() => {
   if (timer) window.clearInterval(timer)
   window.removeEventListener('keydown', onKeydown)
+  window.removeEventListener('mouseover', onHoverIn)
+  window.removeEventListener('mouseout', onHoverOut)
 })
 </script>
 
@@ -276,6 +325,15 @@ onUnmounted(() => {
         </router-view>
       </section>
     </div>
+  </div>
+
+  <!-- 悬停说明 -->
+  <div
+    v-if="hoverTip.show"
+    class="hover-tip"
+    :style="{ left: hoverTip.x + 'px', top: hoverTip.y + 'px' }"
+  >
+    {{ hoverTip.text }}
   </div>
 
   <!-- 全局提示 -->

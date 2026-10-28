@@ -13,6 +13,7 @@ const ui = useUiStore()
 
 const realName = ref('')
 const number = ref('')
+const className = ref('')
 const password = ref('')
 const confirm = ref('')
 const role = ref('student')
@@ -21,7 +22,7 @@ const error = ref('')
 const done = ref(null)
 
 const canSubmit = computed(() => {
-  return realName.value.trim() && number.value.trim() &&
+  return realName.value.trim() && number.value.trim() && className.value.trim() &&
     password.value.length >= 6 && password.value === confirm.value && !loading.value
 })
 
@@ -36,6 +37,7 @@ async function submit() {
     const data = await api.post('/api/auth/register', {
       real_name: realName.value.trim(),
       number: number.value.trim(),
+      class_name: className.value.trim(),
       password: password.value,
       role: role.value,
     })
@@ -106,6 +108,12 @@ function goLogin() {
         </div>
 
         <div class="field">
+          <label>班级</label>
+          <input v-model="className" class="input" placeholder="例如：大数据G231" />
+          <div class="hint">同班同学和老师会自动进入同一个班级群</div>
+        </div>
+
+                <div class="field">
           <label>密码</label>
           <input v-model="password" class="input" type="password" placeholder="至少 6 位" autocomplete="new-password" />
         </div>

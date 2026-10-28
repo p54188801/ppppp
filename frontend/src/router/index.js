@@ -25,6 +25,12 @@ const routes = [
     meta: { title: '工作台' },
   },
   {
+    path: '/groups/:id?',
+    name: 'group',
+    component: () => import('@/views/GroupView.vue'),
+    meta: { title: '班级群' },
+  },
+    {
     path: '/courses',
     name: 'courses',
     component: () => import('@/views/CourseListView.vue'),
