@@ -12,7 +12,25 @@ const router = useRouter()
 const loading = ref(true)
 const data = ref(null)
 const todos = ref(null)
+
+const pendingList = computed(() => {
+  const fromGroup = data.value?.pending_list || []
+  const fromTodos = todos.value?.pending_assignments
+  const extra = Array.isArray(fromTodos) ? fromTodos : []
+  return [...fromGroup, ...extra]
+})
 const pending = ref([])
+const pendingAll = computed(() => {
+  const a = Array.isArray(pending.value) ? pending.value : []
+  const b = data.value?.pending_list || []
+  const seen = new Set()
+  return [...a, ...b].filter((x) => {
+    const k = `${x.source || "class"}-${x.id}`
+    if (seen.has(k)) return false
+    seen.add(k)
+    return true
+  })
+})
 const openSessions = ref([])
 const notices = ref([])
 const learning = ref([])
@@ -100,6 +118,19 @@ onMounted(load)
           <div class="stat-label">出勤率</div>
           <div class="stat-value">{{ data.attendance_rate }}%</div>
           <div class="stat-hint">全部签到记录</div>
+        <div class="stat">
+          <div class="stat-label">班级群学生</div>
+          <div class="stat-value">{{ data.group?.students ?? 0 }}</div>
+          <div class="stat-hint">群内学生总数</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">群作业待批改</div>
+          <div class="stat-value" :style="{ color: data.group?.ungraded ? 'var(--warning)' : '' }">
+            {{ data.group?.ungraded ?? 0 }}
+          </div>
+          <div class="stat-hint">群内未评分提交</div>
+        </div>
+
         </div>
       </div>
 
@@ -177,7 +208,7 @@ onMounted(load)
           <router-link v-if="auth.isStudent" class="small" :to="{ name: 'my-assignments' }">全部</router-link>
         </div>
         <div
-          v-for="item in (todos.pending_assignments || []).slice(0, 3)"
+          v-for="item in pendingList.slice(0, 5)"
           :key="'a' + item.id"
           class="row between"
           style="padding: 6px 0; border-bottom: 1px solid var(--border)"
@@ -286,7 +317,7 @@ onMounted(load)
           <router-link v-if="auth.isStudent" class="small" :to="{ name: 'my-assignments' }">全部</router-link>
         </div>
         <div
-          v-for="item in (todos.pending_assignments || []).slice(0, 3)"
+          v-for="item in pendingList.slice(0, 5)"
           :key="'a' + item.id"
           class="row between"
           style="padding: 6px 0; border-bottom: 1px solid var(--border)"
@@ -332,7 +363,7 @@ onMounted(load)
         <div class="stat">
           <div class="stat-label">待完成作业</div>
           <div class="stat-value" :style="{ color: pending.length ? 'var(--warning)' : '' }">
-            {{ data.pending_assignments }}
+            {{ data.pending_count ?? (Array.isArray(data.pending_assignments) ? data.pending_assignments.length : data.pending_assignments) }}
           </div>
           <div class="stat-hint">未提交的作业</div>
         </div>
@@ -401,9 +432,9 @@ onMounted(load)
             <span>待交作业</span>
             <router-link class="small" :to="{ name: 'my-assignments' }">全部</router-link>
           </div>
-          <div v-if="!pending.length" class="empty">太棒了，没有待交作业</div>
+          <div v-if="!pendingAll.length" class="empty">太棒了，没有待交作业</div>
           <div
-            v-for="item in pending.slice(0, 5)"
+            v-for="item in pendingAll.slice(0, 5)"
             :key="item.id"
             class="row between"
             style="padding: 8px 0; border-bottom: 1px solid var(--border); cursor: pointer"

@@ -15,10 +15,10 @@ router = Router()
 def dashboard(req) -> Response:
     user = permissions.require_login(req.user)
     if user["role"] == permissions.ROLE_ADMIN:
-        return ok(statistics_service.admin_dashboard())
+        return ok(statistics_service.merge_group_overlay(user, statistics_service.admin_dashboard()))
     if user["role"] == permissions.ROLE_TEACHER:
-        return ok(statistics_service.teacher_dashboard(user))
-    return ok(statistics_service.student_report(user))
+        return ok(statistics_service.merge_group_overlay(user, statistics_service.teacher_dashboard(user)))
+    return ok(statistics_service.merge_group_overlay(user, statistics_service.student_report(user)))
 
 
 @router.get("/api/reports/course/<int:course_id>", roles=("teacher", "admin"),
@@ -31,7 +31,7 @@ def course_report(req) -> Response:
 @router.get("/api/reports/student", roles=("student",), summary="学习报告")
 def student_report(req) -> Response:
     user = permissions.require_role(req.user, "student")
-    return ok(statistics_service.student_report(user))
+    return ok(statistics_service.merge_group_overlay(user, statistics_service.student_report(user)))
 
 
 @router.get("/api/audit-logs", roles=("admin",), summary="审计日志")
