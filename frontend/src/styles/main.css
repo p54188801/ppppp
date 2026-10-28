@@ -1172,3 +1172,28 @@ tbody tr:hover { background: #f8fbff; }
   from { opacity: 0; transform: translateY(-4px); }
   to { opacity: 1; transform: translateY(0); }
 }
+/* ============================================================
+   移动端补丁
+   ============================================================ */
+@media (max-width: 820px) {
+  .toast-wrap { top: 62px; left: 12px; right: 12px; }
+  .toast { width: 100%; }
+  .page-head { gap: 10px; }
+  .page-head h1 { font-size: 20px; }
+  .page-head .row { width: 100%; }
+  .card { padding: 14px; }
+  .btn { min-height: 38px; }
+  .btn.sm { min-height: 32px; }
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .modal { width: calc(100vw - 24px); max-height: 86vh; overflow-y: auto; }
+  .modal-mask { padding: 12px; }
+  .tabs { overflow-x: auto; white-space: nowrap; }
+  .hover-tip { display: none; }
+}
+
+@media (max-width: 520px) {
+  .grid.cols-2, .grid.cols-3, .grid.cols-4 { grid-template-columns: 1fr; }
+  .topbar-search { display: none; }
+  .stat-value { font-size: 22px; }
+  .chat-box { max-height: 46vh; }
+}

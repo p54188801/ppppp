@@ -347,4 +347,12 @@ onMounted(loadGroups)
 .msg-file { margin-top: 6px; display: flex; gap: 10px; align-items: center; font-size: 13px; }
 .chat-input { display: flex; gap: 8px; margin-top: 14px; }
 .assign-item { padding: 12px; border: 1px solid var(--border); border-radius: 12px; margin-bottom: 10px; background: #fff; }
-</style>
+
+@media (max-width: 900px) {
+  .group-layout { grid-template-columns: 1fr; }
+  .chat-box { max-height: 52vh; }
+  .chat-input { flex-wrap: wrap; }
+  .chat-input .input { flex: 1 1 100%; }
+  .chat-input .btn { flex: 1 1 auto; }
+  .assign-item { padding: 10px; }
+}</style>
