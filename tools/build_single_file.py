@@ -289,6 +289,7 @@ class Application:
         for module in (
             auth_api, user_api, course_api, chapter_api, assignment_api, quiz_api,
             attendance_api, grade_api, content_api, report_api, system_api,
+            group_api, timetable_api,
         ):
             self.router.include(module.router)
         system_api.bind_application(self)
