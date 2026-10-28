@@ -31,6 +31,12 @@ const routes = [
     meta: { title: '工作台' },
   },
   {
+    path: '/timetable',
+    name: 'timetable',
+    component: () => import('@/views/TimetableView.vue'),
+    meta: { title: '课表' },
+  },
+  {
     path: '/groups/:id?',
     name: 'group',
     component: () => import('@/views/GroupView.vue'),
