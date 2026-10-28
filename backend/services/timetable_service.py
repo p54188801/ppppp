@@ -31,7 +31,8 @@ def _row(r: dict[str, Any]) -> dict[str, Any]:
     return r
 
 
-def list_slots(user: dict[str, Any], *, class_name: str = "", teacher_name: str = "") -> dict[str, Any]:
+def list_slots(user: dict[str, Any], *, class_name: str = "", teacher_name: str = "",
+               semester: str = "") -> dict[str, Any]:
     """学生看自己班；教师看自己的课（也可切到全部）；管理员看全部。"""
     where, params = [], []
     scope = "all"
@@ -59,6 +60,15 @@ def list_slots(user: dict[str, Any], *, class_name: str = "", teacher_name: str 
         params.append(class_name)
         scope = "class"
 
+    semesters = [r["semester"] for r in connection.query_all(
+        "SELECT DISTINCT semester FROM timetable WHERE semester <> '' ORDER BY semester DESC"
+    )]
+    if not semester and semesters:
+        semester = semesters[0]
+    if semester:
+        where.append("semester = ?")
+        params.append(semester)
+
     sql = "SELECT * FROM timetable"
     if where:
         sql += " WHERE " + " AND ".join(where)
@@ -67,6 +77,8 @@ def list_slots(user: dict[str, Any], *, class_name: str = "", teacher_name: str 
     return {
         "scope": scope,
         "class_name": class_name or (user.get("class_name") or ""),
+        "semester": semester,
+        "semesters": semesters,
         "slots": rows,
         "periods": PERIODS,
         "weekdays": WEEKDAYS,
@@ -87,10 +99,12 @@ def create_slot(user: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]
     try:
         sid = connection.execute(
             """INSERT INTO timetable
-                   (class_name, weekday, period, course_name, teacher_name, room, note, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (class_name, weekday, period, course_name, teacher_name, room, note,
+                    created_at, updated_at, semester, weeks)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (data["class_name"], data["weekday"], data["period"], data["course_name"],
-             data["teacher_name"], data["room"], data["note"], now, now),
+             data["teacher_name"], data["room"], data["note"], now, now,
+             data["semester"], data["weeks"]),
         )
     except Exception as exc:  # noqa: BLE001
         if "UNIQUE" in str(exc):
@@ -111,7 +125,8 @@ def update_slot(user: dict[str, Any], slot_id: int, payload: dict[str, Any]) -> 
         """UPDATE timetable SET class_name=?, weekday=?, period=?, course_name=?,
                   teacher_name=?, room=?, note=?, updated_at=? WHERE id=?""",
         (data["class_name"], data["weekday"], data["period"], data["course_name"],
-         data["teacher_name"], data["room"], data["note"], clock.now_iso(), slot_id),
+         data["teacher_name"], data["room"], data["note"], clock.now_iso(),
+         data["semester"], data["weeks"], slot_id),
     )
     audit_repo.log(user_id=int(user["id"]), username=user["username"], action="timetable_update",
                    entity="timetable", entity_id=slot_id, detail=f"{data['class_name']} {data['course_name']}")
@@ -147,4 +162,6 @@ def _validate(payload: dict[str, Any]) -> dict[str, Any]:
         "teacher_name": validators.optional_str(payload, "teacher_name", "", max_len=32),
         "room": validators.optional_str(payload, "room", "", max_len=32),
         "note": validators.optional_str(payload, "note", "", max_len=200),
+        "semester": validators.optional_str(payload, "semester", "2026-2027-1", max_len=32),
+        "weeks": validators.optional_str(payload, "weeks", "1-20", max_len=64),
     }

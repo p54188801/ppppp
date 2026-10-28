@@ -17,6 +17,7 @@ def list_slots(req) -> Response:
         user,
         class_name=req.str_param("class_name"),
         teacher_name=req.str_param("teacher_name"),
+        semester=req.str_param("semester"),
     )
     return ok(data)
 

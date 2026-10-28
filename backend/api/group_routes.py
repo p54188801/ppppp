@@ -36,7 +36,8 @@ def list_groups(req) -> Response:
 @router.get("/api/groups/<int:group_id>", summary="班级群详情")
 def group_detail(req) -> Response:
     user = permissions.require_login(req.user)
-    return ok(group_service.group_detail(user, req.path_params["group_id"]))
+    limit = req.int_param("limit", 100) or 100
+    return ok(group_service.group_detail(user, req.path_params["group_id"], limit=min(limit, 500)))
 
 
 @router.post("/api/groups/<int:group_id>/messages", summary="发群消息")

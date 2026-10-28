@@ -15,7 +15,7 @@ from backend.core import clock
 from backend.db import connection
 
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
-CURRENT_VERSION = 7
+CURRENT_VERSION = 8
 
 
 def _read_schema() -> str:
@@ -261,7 +261,21 @@ def _migrate_v7(conn: sqlite3.Connection) -> None:
     )
 
 
+
+def _migrate_v8(conn: sqlite3.Connection) -> None:
+    """v7 -> v8：课表增加学期与周次。"""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(timetable)")}
+    if "semester" not in cols:
+        conn.execute("ALTER TABLE timetable ADD COLUMN semester TEXT NOT NULL DEFAULT ''")
+    if "weeks" not in cols:
+        conn.execute("ALTER TABLE timetable ADD COLUMN weeks TEXT NOT NULL DEFAULT '1-20'")
+    conn.execute(
+        "UPDATE timetable SET semester = '2026-2027-1' WHERE semester = '' OR semester IS NULL"
+    )
+
+
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
+
 
 
     (1, _migrate_v1),
@@ -271,6 +285,7 @@ MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (5, _migrate_v5),
     (6, _migrate_v6),
     (7, _migrate_v7),
+    (8, _migrate_v8),
 ]
 
 
