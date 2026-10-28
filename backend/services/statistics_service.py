@@ -244,3 +244,60 @@ def teacher_dashboard(teacher: dict[str, Any]) -> dict[str, Any]:
         "upcoming": upcoming,
         "generated_at": clock.now_iso(),
     }
+
+def my_todos(viewer: dict[str, Any]) -> dict[str, Any]:
+    """待办中心：聚合当前用户所有待处理事项。"""
+    from backend.repositories.assignments import AssignmentRepository
+    from backend.repositories.attendance import AttendanceSessionRepository
+    from backend.repositories.courses import ClassRepository
+
+    user_id = int(viewer["id"])
+    now = clock.now_iso()
+    if viewer["role"] == permissions.ROLE_STUDENT:
+        pending = AssignmentRepository().list_for_student(user_id, status="pending", limit=50)
+        sessions = AttendanceSessionRepository().list_open_for_student(user_id)
+        quizzes = connection.query_all(
+            """SELECT q.id, q.title, q.end_at, q.duration, c.name AS course_name,
+                      a.id AS attempt_id
+                 FROM quizzes q
+                 JOIN classes cl ON cl.id = q.class_id
+                 JOIN courses c ON c.id = cl.course_id
+                 JOIN enrollments e ON e.class_id = q.class_id AND e.student_id = ?
+                                   AND e.status = 'active'
+                 LEFT JOIN quiz_attempts a ON a.quiz_id = q.id AND a.student_id = ?
+                WHERE q.status = 'published' AND a.id IS NULL
+                  AND (q.end_at IS NULL OR q.end_at > ?)
+                ORDER BY COALESCE(q.end_at, '9999') ASC""",
+            (user_id, user_id, now),
+        )
+        total = len(pending) + len(sessions) + len(quizzes)
+        return {
+            "role": "student",
+            "total": total,
+            "pending_assignments": pending,
+            "open_attendance": sessions,
+            "upcoming_quizzes": quizzes,
+        }
+    if viewer["role"] == permissions.ROLE_TEACHER:
+        classes = ClassRepository().of_teacher(user_id)
+        class_ids = [int(c["id"]) for c in classes]
+        ungraded = []
+        if class_ids:
+            marks = ",".join("?" for _ in class_ids)
+            ungraded = connection.query_all(
+                f"""SELECT s.id, s.submitted_at, a.title, a.class_id, cl.name AS class_name,
+                           u.real_name AS student_name
+                      FROM submissions s
+                      JOIN assignments a ON a.id = s.assignment_id
+                      JOIN classes cl ON cl.id = a.class_id
+                      JOIN users u ON u.id = s.student_id
+                     WHERE a.class_id IN ({marks}) AND s.status <> 'graded'
+                     ORDER BY s.submitted_at ASC LIMIT 20""",
+                tuple(class_ids),
+            )
+        return {
+            "role": "teacher",
+            "total": len(ungraded),
+            "ungraded": ungraded,
+        }
+    return {"role": "admin", "total": 0}

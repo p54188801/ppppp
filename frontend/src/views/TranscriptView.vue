@@ -54,6 +54,24 @@ async function load() {
   }
 }
 
+async function exportCsv() {
+  try {
+    const token = localStorage.getItem('eduflow_token') || ''
+    const res = await fetch('/api/my/transcript/export', {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!res.ok) throw new Error('导出失败')
+    const blob = await res.blob()
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = '我的成绩单.csv'
+    a.click()
+    URL.revokeObjectURL(a.href)
+  } catch (err) {
+    ui.error(err.message)
+  }
+}
+
 onMounted(load)
 </script>
 
@@ -64,6 +82,7 @@ onMounted(load)
         <h1>我的成绩</h1>
         <p>按教学班汇总作业、测验、出勤与期末成绩，生成加权总评与绩点</p>
       </div>
+      <button class="btn primary" :disabled="loading" @click="exportCsv">导出 CSV</button>
       <button class="btn" :disabled="loading" @click="load">
         {{ loading ? '刷新中…' : '刷新成绩' }}
       </button>

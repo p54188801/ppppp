@@ -45,3 +45,8 @@ def audit_logs(req) -> Response:
     items = repo.list_logs(action=action, keyword=keyword, limit=page_size, offset=offset)
     total = repo.count_logs(action=action, keyword=keyword)
     return paginated(items, total, page, page_size)
+
+@router.get("/api/my/todos", summary="待办中心")
+def my_todos(req) -> Response:
+    user = permissions.require_login(req.user)
+    return ok(statistics_service.my_todos(user))

@@ -116,6 +116,22 @@ async function cancelAccount(user) {
   }
 }
 
+async function exportUsers() {
+  try {
+    const token = localStorage.getItem('eduflow_token') || ''
+    const res = await fetch('/api/users/export', { headers: { Authorization: `Bearer ${token}` } })
+    if (!res.ok) throw new Error('导出失败')
+    const blob = await res.blob()
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = '用户名单.csv'
+    a.click()
+    URL.revokeObjectURL(a.href)
+  } catch (err) {
+    ui.error(err.message)
+  }
+}
+
 async function load() {
   loading.value = true
   try {
@@ -341,6 +357,7 @@ onMounted(load)
         />
         <button class="btn" :disabled="loading" @click="search">搜索</button>
         <button class="btn" @click="openCreate">新建用户</button>
+        <button class="btn" @click="exportUsers">导出名单</button>
         <button class="btn primary" @click="openImport">批量导入</button>
       </div>
     </div>

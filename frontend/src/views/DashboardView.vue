@@ -11,6 +11,7 @@ const router = useRouter()
 
 const loading = ref(true)
 const data = ref(null)
+const todos = ref(null)
 const pending = ref([])
 const openSessions = ref([])
 const notices = ref([])
@@ -27,6 +28,11 @@ async function load() {
   loading.value = true
   try {
     data.value = await api.get('/api/dashboard')
+    try {
+      todos.value = await api.get('/api/my/todos')
+    } catch {
+      todos.value = null
+    }
     if (auth.isStudent) {
       pending.value = await api.get('/api/my/assignments', { status: 'pending' })
       openSessions.value = await api.get('/api/my/attendance/open')
@@ -165,6 +171,49 @@ onMounted(load)
 
     <!-- ================= 教师 ================= -->
     <template v-else-if="auth.isTeacher && data">
+      <div v-if="todos && todos.total" class="card" style="margin-bottom: 16px; border-color: rgba(210, 153, 34, 0.45)">
+        <div class="card-title">
+          <span style="color: var(--warning)">待办提醒 · {{ todos.total }} 项</span>
+          <router-link v-if="auth.isStudent" class="small" :to="{ name: 'my-assignments' }">全部</router-link>
+        </div>
+        <div
+          v-for="item in (todos.pending_assignments || []).slice(0, 3)"
+          :key="'a' + item.id"
+          class="row between"
+          style="padding: 6px 0; border-bottom: 1px solid var(--border)"
+        >
+          <span>作业 · {{ item.title }}</span>
+          <span class="badge yellow">{{ deadlineText(item.deadline) }}</span>
+        </div>
+        <div
+          v-for="item in (todos.upcoming_quizzes || []).slice(0, 3)"
+          :key="'q' + item.id"
+          class="row between"
+          style="padding: 6px 0; border-bottom: 1px solid var(--border)"
+        >
+          <span>测验 · {{ item.title }}</span>
+          <span class="badge blue">待完成</span>
+        </div>
+        <div
+          v-for="item in (todos.open_attendance || []).slice(0, 3)"
+          :key="'s' + item.id"
+          class="row between"
+          style="padding: 6px 0; border-bottom: 1px solid var(--border)"
+        >
+          <span>签到 · {{ item.title }}</span>
+          <span class="badge green">进行中</span>
+        </div>
+        <div
+          v-for="item in (todos.ungraded || []).slice(0, 4)"
+          :key="'u' + item.id"
+          class="row between"
+          style="padding: 6px 0; border-bottom: 1px solid var(--border)"
+        >
+          <span>待批改 · {{ item.student_name }} · {{ item.title }}</span>
+          <span class="badge yellow">{{ item.class_name }}</span>
+        </div>
+      </div>
+
       <div class="grid cols-4">
         <div class="stat">
           <div class="stat-label">我的教学班</div>
@@ -231,6 +280,49 @@ onMounted(load)
 
     <!-- ================= 学生 ================= -->
     <template v-else-if="auth.isStudent && data">
+      <div v-if="todos && todos.total" class="card" style="margin-bottom: 16px; border-color: rgba(210, 153, 34, 0.45)">
+        <div class="card-title">
+          <span style="color: var(--warning)">待办提醒 · {{ todos.total }} 项</span>
+          <router-link v-if="auth.isStudent" class="small" :to="{ name: 'my-assignments' }">全部</router-link>
+        </div>
+        <div
+          v-for="item in (todos.pending_assignments || []).slice(0, 3)"
+          :key="'a' + item.id"
+          class="row between"
+          style="padding: 6px 0; border-bottom: 1px solid var(--border)"
+        >
+          <span>作业 · {{ item.title }}</span>
+          <span class="badge yellow">{{ deadlineText(item.deadline) }}</span>
+        </div>
+        <div
+          v-for="item in (todos.upcoming_quizzes || []).slice(0, 3)"
+          :key="'q' + item.id"
+          class="row between"
+          style="padding: 6px 0; border-bottom: 1px solid var(--border)"
+        >
+          <span>测验 · {{ item.title }}</span>
+          <span class="badge blue">待完成</span>
+        </div>
+        <div
+          v-for="item in (todos.open_attendance || []).slice(0, 3)"
+          :key="'s' + item.id"
+          class="row between"
+          style="padding: 6px 0; border-bottom: 1px solid var(--border)"
+        >
+          <span>签到 · {{ item.title }}</span>
+          <span class="badge green">进行中</span>
+        </div>
+        <div
+          v-for="item in (todos.ungraded || []).slice(0, 4)"
+          :key="'u' + item.id"
+          class="row between"
+          style="padding: 6px 0; border-bottom: 1px solid var(--border)"
+        >
+          <span>待批改 · {{ item.student_name }} · {{ item.title }}</span>
+          <span class="badge yellow">{{ item.class_name }}</span>
+        </div>
+      </div>
+
       <div class="grid cols-4">
         <div class="stat">
           <div class="stat-label">在读课程</div>

@@ -99,3 +99,26 @@ def kick_user(req) -> Response:
 def cancel_account(req) -> Response:
     admin = permissions.require_admin(req.user)
     return ok(user_service.cancel_account(req.path_params["user_id"], operator=admin), "账号已注销")
+
+@router.get("/api/users/export", roles=("admin",), summary="导出用户名单 CSV")
+def export_users(req) -> Response:
+    import csv
+    import io
+
+    permissions.require_admin(req.user)
+    role = req.str_param("role")
+    items, _total = user_service.list_users(role=role, keyword="", page=1, page_size=200)
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["用户名", "姓名", "角色", "学号/工号", "学院", "行政班", "邮箱", "状态", "最后登录"])
+    for u in items:
+        w.writerow([
+            u.get("username"), u.get("real_name"), u.get("role_label"), u.get("number") or "",
+            u.get("department") or "", u.get("class_name") or "", u.get("email") or "",
+            "启用" if u.get("status") == "active" else "停用", u.get("last_login_at") or "",
+        ])
+    from backend.http.response import Response as R
+
+    return R(status=200, body=buf.getvalue().encode("utf-8-sig"),
+             content_type="text/csv; charset=utf-8",
+             headers={"Content-Disposition": "attachment; filename=users.csv"})

@@ -6,6 +6,7 @@
  * 点击某条通知标记已读，顶部提供「全部已读」与「清空已读」两个批量操作。
  */
 import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { api, relativeTime } from '@/api/client'
 import { useUiStore } from '@/stores/ui'
 
@@ -85,6 +86,15 @@ async function markRead(item) {
   }
 }
 
+async function openItem(item) {
+  await markRead(item)
+  if (item.link) {
+    const target = item.link.startsWith('/') ? `#${item.link}` : item.link
+    if (target.startsWith('#')) window.location.hash = target.slice(1)
+    else window.open(item.link, '_blank')
+  }
+}
+
 async function markAllRead() {
   acting.value = true
   try {
@@ -157,7 +167,7 @@ onMounted(load)
         :key="item.id"
         class="card"
         style="cursor: pointer; padding: 14px 18px"
-        @click="markRead(item)"
+        @click="openItem(item)"
       >
         <div class="row between" style="align-items: flex-start; gap: 14px">
           <div class="row" style="gap: 8px; align-items: flex-start; min-width: 0">

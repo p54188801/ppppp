@@ -82,3 +82,28 @@ def export(req) -> Response:
             "Content-Disposition": f"attachment; filename=gradebook_{req.path_params['class_id']}.csv"
         },
     )
+
+@router.get("/api/my/transcript/export", roles=("student",), summary="导出我的成绩单 CSV")
+def export_transcript(req) -> Response:
+    import csv
+    import io
+
+    user = permissions.require_role(req.user, "student")
+    data = grade_service.my_transcript(user)
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["课程", "教学班", "学分", "作业", "测验", "出勤", "期末", "总评", "绩点", "是否通过"])
+    for row in data["rows"]:
+        w.writerow([
+            row.get("course_name", ""), row.get("class_name", ""), row.get("credits", ""),
+            row.get("assignment_score"), row.get("quiz_score"), row.get("attendance_score"),
+            "" if row.get("final_score") is None else row["final_score"],
+            row.get("total"), row.get("grade_point"), "是" if row.get("passed") else "否",
+        ])
+    w.writerow([])
+    w.writerow(["总学分", data["total_credits"], "GPA", data["gpa"], "平均分", data["average"]])
+    from backend.http.response import Response as R
+
+    return R(status=200, body=buf.getvalue().encode("utf-8-sig"),
+             content_type="text/csv; charset=utf-8",
+             headers={"Content-Disposition": "attachment; filename=my_transcript.csv"})
