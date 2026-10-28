@@ -1197,3 +1197,8 @@ tbody tr:hover { background: #f8fbff; }
   .stat-value { font-size: 22px; }
   .chat-box { max-height: 46vh; }
 }
+/* 移动端抽屉宽度留出遮罩可点区域 */
+@media (max-width: 820px) {
+  .sidebar { width: 78vw; max-width: 300px; }
+  .sidebar-mask { background: rgba(30, 58, 95, 0.32); }
+}
