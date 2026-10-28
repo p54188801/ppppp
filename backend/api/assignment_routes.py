@@ -136,3 +136,9 @@ def delete_attachment(req) -> Response:
 def submission_progress(req) -> Response:
     user = permissions.require_login(req.user)
     return ok(assignment_service.submission_progress(user, req.path_params["assignment_id"]))
+
+@router.post("/api/assignments/<int:assignment_id>/remind",
+             roles=("teacher", "admin"), summary="催交未提交学生")
+def remind_missing(req) -> Response:
+    user = permissions.require_login(req.user)
+    return ok(assignment_service.remind_missing(user, req.path_params["assignment_id"]))

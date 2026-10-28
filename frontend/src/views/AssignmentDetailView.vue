@@ -107,6 +107,23 @@ function submitLink() {
   return `${window.location.origin}${window.location.pathname}#/assignments/${id}`
 }
 
+async function remindMissing() {
+  if (!progress.value?.missing_count) return ui.info('全部已交，无需提醒')
+  const okConfirm = await ui.confirm({
+    title: '催交作业',
+    message: `给 ${progress.value.missing_count} 名未交学生发送提醒？`,
+    confirmText: '发送提醒',
+  })
+  if (!okConfirm) return
+  try {
+    const res = await api.post(`/api/assignments/${id}/remind`)
+    ui.success(`已提醒 ${res.sent} 人`)
+    await loadProgress()
+  } catch (error) {
+    ui.error(error.message)
+  }
+}
+
 async function copyLink() {
   const link = submitLink()
   try {
@@ -320,6 +337,9 @@ onMounted(async () => {
       <div class="card-title">
         <span>提交情况</span>
         <div class="row" style="gap: 8px">
+          <button class="btn sm" :disabled="!progress?.missing_count" @click="remindMissing">
+            提醒未交（{{ progress?.missing_count || 0 }}）
+          </button>
           <button class="btn sm" @click="copyLink">复制提交链接</button>
           <button class="btn sm" :disabled="!progress" @click="loadProgress">刷新</button>
         </div>

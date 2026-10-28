@@ -374,6 +374,7 @@ def submission_progress(user: dict[str, Any], assignment_id: int) -> dict[str, A
     return {
         "assignment_id": assignment_id,
         "title": assignment["title"],
+        "deadline": assignment.get("deadline") or "",
         "class_name": cls["name"],
         "total": len(students),
         "submitted_count": len(submitted),
@@ -382,3 +383,32 @@ def submission_progress(user: dict[str, Any], assignment_id: int) -> dict[str, A
         "submitted": submitted,
         "missing": missing,
     }
+
+def remind_missing(user: dict[str, Any], assignment_id: int) -> dict[str, Any]:
+    """给未交作业的学生群发提醒。"""
+    from backend.services import notification_service
+
+    data = submission_progress(user, assignment_id)
+    missing = data["missing"]
+    if not missing:
+        return {"sent": 0, "message": "全部已提交，无需提醒"}
+
+    link = f"/assignments/{assignment_id}"
+    deadline = data.get("deadline") or ""
+    detail = f"《{data['title']}》还没有提交" + (f"，截止 {deadline}" if deadline else "")
+    sent = notification_service.notify_many(
+        [int(m["student_id"]) for m in missing],
+        title=f"作业催交：{data['title']}",
+        content=f"{detail}，请尽快提交。",
+        category="course",
+        link=link,
+    )
+    audit_repo.log(
+        user_id=int(user["id"]),
+        username=user["username"],
+        action="assignment_remind",
+        entity="assignment",
+        entity_id=assignment_id,
+        detail=f"提醒 {sent} 名学生补交作业",
+    )
+    return {"sent": sent, "students": [m["real_name"] for m in missing]}
