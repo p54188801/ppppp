@@ -346,3 +346,44 @@ def update_profile(user: dict[str, Any], payload: dict[str, Any]) -> dict[str, A
         detail=f"自助修改资料：{', '.join(updates.keys())}",
     )
     return auth_service.to_public(user_repo.find(user_id)) or {}
+
+def forgot_password(payload: dict[str, Any], *, ip: str = "") -> dict[str, Any]:
+    """凭「学号/工号 + 姓名」重置为临时密码。
+
+    这是没有短信/邮件的校园小型部署方案：只核对身份信息，
+    重置后强制下次登录修改密码，并吊销所有旧会话。
+    """
+    import secrets
+
+    from backend.core import security
+
+    number = validators.required_str(payload, "number", min_len=2, max_len=32)
+    real_name = validators.required_str(payload, "real_name", min_len=1, max_len=32)
+
+    user = user_repo.by_number(number)
+    if user is None or (user.get("real_name") or "").strip() != real_name.strip():
+        audit_repo.log(
+            user_id=None, username=number, action="forgot_password_failed",
+            entity="user", entity_id=None, detail=f"身份不匹配（{ip}）", ip=ip,
+        )
+        raise ValidationError("学号与姓名不匹配，请检查后重试")
+
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
+    temp = "".join(secrets.choice(alphabet) for _ in range(8))
+    digest, salt = security.hash_password(temp)
+    user_repo.update(int(user["id"]), {
+        "password_hash": digest,
+        "password_salt": salt,
+        "must_change_password": 1,
+    })
+    session_repo.revoke_all_for_user(int(user["id"]))
+    audit_repo.log(
+        user_id=int(user["id"]), username=user["username"], action="forgot_password",
+        entity="user", entity_id=int(user["id"]), detail=f"自助重置为临时密码（{ip}）", ip=ip,
+    )
+    return {
+        "username": user["username"],
+        "real_name": user.get("real_name"),
+        "temp_password": temp,
+        "hint": "登录后用临时密码修改成自己的密码",
+    }

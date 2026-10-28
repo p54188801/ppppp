@@ -71,6 +71,9 @@ async function submit() {
       <div class="row" style="justify-content: center; margin-top: 14px">
         <router-link class="small" :to="{ name: 'register' }">没有账号？立即注册</router-link>
       </div>
+      <div class="row" style="justify-content: center; margin-top: 8px">
+        <router-link class="small" :to="{ name: 'forgot' }">忘记密码？</router-link>
+      </div>
     </form>
   </div>
 </template>

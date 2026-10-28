@@ -57,7 +57,9 @@ class StaticFiles:
                 if index.is_file():
                     return self._read(index, url_path, cache=False)
             raise NotFoundError(f"静态资源不存在：{url_path}")
-        return self._read(target, url_path, cache=cache)
+        # index.html 绝不能被缓存，否则升级后前端仍是旧版本（表现为按钮点了没反应）
+        is_index = target.name == "index.html"
+        return self._read(target, url_path, cache=cache and not is_index)
 
     def _read(self, path: Path, url_path: str, *, cache: bool) -> Response:
         mime, _ = mimetypes.guess_type(str(path))
@@ -73,7 +75,8 @@ class StaticFiles:
         if cache:
             headers["Cache-Control"] = f"public, max-age={STATIC_CACHE_SECONDS}"
         else:
-            headers["Cache-Control"] = "no-cache"
+            headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            headers["Pragma"] = "no-cache"
         # 带 hash 的构建产物可以长缓存
         if "/assets/" in url_path:
             headers["Cache-Control"] = "public, max-age=31536000, immutable"

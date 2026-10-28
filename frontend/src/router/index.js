@@ -13,6 +13,12 @@ const routes = [
     meta: { public: true, title: '登录' },
   },
   {
+    path: '/forgot',
+    name: 'forgot',
+    component: () => import('@/views/ForgotView.vue'),
+    meta: { public: true, title: '忘记密码' },
+  },
+    {
     path: '/register',
     name: 'register',
     component: () => import('@/views/RegisterView.vue'),

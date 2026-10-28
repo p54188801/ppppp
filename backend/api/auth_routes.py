@@ -73,3 +73,21 @@ def update_profile(req) -> Response:
     user = permissions.require_login(req.user)
     data = user_service.update_profile(user, req.json())
     return ok(data, "资料已更新")
+
+_RESET_LOG: dict[str, list[float]] = {}
+
+
+@router.post("/api/auth/forgot-password", auth=False, summary="忘记密码（重置为临时密码）")
+def forgot_password(req) -> Response:
+    import time
+
+    ip = req.client_ip or "unknown"
+    now = time.time()
+    hits = [x for x in _RESET_LOG.get(ip, []) if now - x < 600]
+    if len(hits) >= 5:
+        raise ValidationError("重置过于频繁，请 10 分钟后再试")
+    hits.append(now)
+    _RESET_LOG[ip] = hits
+
+    data = user_service.forgot_password(req.json(), ip=ip)
+    return ok(data, "已重置，请用临时密码登录")
