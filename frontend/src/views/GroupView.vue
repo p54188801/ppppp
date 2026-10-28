@@ -1,7 +1,9 @@
 <script setup>
 /**
- * 班级群：同班师生在这里聊天、发作业、交作业、批改。
- * 左侧群列表，右侧聊天 + 作业两个标签页。
+ * 班级群：微信式聊天 + 群作业。
+ * - 老师发的作业消息点一下就能打开作业
+ * - 提交作业用弹窗：支持文字 + 图片 + 文件
+ * - 老师点作业卡片任意位置看「谁交了 / 谁没交」
  */
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -23,23 +25,39 @@ const sending = ref(false)
 const limit = ref(60)
 const chatBox = ref(null)
 const fileInput = ref(null)
+
+/* 发布作业 */
 const showAssign = ref(false)
-const assignForm = ref({ title: '', content: '', full_score: 100, deadline: '' })
+const assignForm = ref(blankAssign())
+
+/* 作业详情 */
+const detail = ref(null)
+const detailTab = ref('in')
+const detailLoading = ref(false)
 const submissions = ref([])
-const grading = ref(null)
+
+/* 提交作业 */
+const showSubmit = ref(false)
+const submitTarget = ref(null)
+const submitText = ref('')
+const submitFile = ref(null)
+const submitPreview = ref('')
+const submitting = ref(false)
+const submitFileInput = ref(null)
 
 const groupId = computed(() => Number(route.params.id) || 0)
+const isTeacher = computed(() => Boolean(current.value?.is_teacher))
+
+function blankAssign() {
+  return { title: '', content: '', full_score: 100, date: '', time: '23:59' }
+}
 
 async function loadGroups() {
   groups.value = await api.get('/api/groups').catch(() => [])
   if (!groupId.value && groups.value.length) {
     const id = groups.value[0].id
     router.replace({ name: 'group', params: { id } })
-    try {
-      current.value = await api.get(`/api/groups/${id}?limit=${limit.value}`)
-    } catch (error) {
-      ui.error(error.message)
-    }
+    current.value = await api.get(`/api/groups/${id}?limit=${limit.value}`).catch(() => null)
     loading.value = false
     return
   }
@@ -59,15 +77,9 @@ function switchGroup(id) {
   router.push({ name: 'group', params: { id } })
 }
 
-
 async function loadMore() {
   limit.value += 60
   await loadGroup()
-}
-
-function scrollToBottom() {
-  const el = chatBox.value
-  if (el) el.scrollTop = el.scrollHeight
 }
 
 function isMine(m) {
@@ -75,12 +87,11 @@ function isMine(m) {
 }
 
 function roleBadge(m) {
-  if (m.sender_role === 'teacher' || m.sender_role === 'admin') {
-    return { text: '老师', cls: 'teacher' }
-  }
+  if (m.sender_role === 'teacher' || m.sender_role === 'admin') return { text: '老师', cls: 'teacher' }
   return { text: '学生', cls: 'student' }
 }
 
+/* ---------------------------- 聊天 ---------------------------- */
 async function send() {
   if (!draft.value.trim() || sending.value) return
   sending.value = true
@@ -107,6 +118,7 @@ async function pickFile(event) {
     await api.upload(`/api/groups/${groupId.value}/messages`, form)
     draft.value = ''
     await loadGroup()
+    scrollToBottom()
   } catch (error) {
     ui.error(error.message)
   } finally {
@@ -115,18 +127,51 @@ async function pickFile(event) {
   }
 }
 
-async function downloadMessage(message) {
+async function downloadMessage(m) {
   const token = localStorage.getItem('eduflow_token') || ''
-  const res = await fetch(`/api/messages/${message.id}/file`, {
+  const res = await fetch(`/api/messages/${m.id}/file`, {
     headers: { Authorization: `Bearer ${token}` },
   })
   if (!res.ok) return ui.error('下载失败')
   const blob = await res.blob()
   const a = document.createElement('a')
   a.href = URL.createObjectURL(blob)
-  a.download = message.file_name || 'file'
+  a.download = m.file_name || 'file'
   a.click()
   URL.revokeObjectURL(a.href)
+}
+
+function scrollToBottom() {
+  requestAnimationFrame(() => {
+    const el = chatBox.value
+    if (el) el.scrollTop = el.scrollHeight
+  })
+}
+
+function openAssignmentFromMessage(m) {
+  const found = (current.value?.assignments || []).find((a) => Number(a.id) === Number(m.ref_id))
+  openAssignment(found || { id: m.ref_id, title: m.content })
+}
+
+/* ---------------------------- 发布作业 ---------------------------- */
+const presets = [
+  { label: '今晚 23:59', days: 0 },
+  { label: '3 天后', days: 3 },
+  { label: '一周后', days: 7 },
+  { label: '两周后', days: 14 },
+]
+
+function applyPreset(p) {
+  const d = new Date()
+  d.setDate(d.getDate() + p.days)
+  assignForm.value.date = d.toISOString().slice(0, 10)
+  assignForm.value.time = '23:59'
+}
+
+function deadlineValue() {
+  const { date, time } = assignForm.value
+  if (!date) return ''
+  return `${date}T${time || '23:59'}`
 }
 
 async function createAssignment() {
@@ -136,10 +181,10 @@ async function createAssignment() {
       title: assignForm.value.title.trim(),
       content: assignForm.value.content,
       full_score: Number(assignForm.value.full_score) || 100,
-      deadline: assignForm.value.deadline || '',
+      deadline: deadlineValue(),
     })
     showAssign.value = false
-    assignForm.value = { title: '', content: '', full_score: 100, deadline: '' }
+    assignForm.value = blankAssign()
     await loadGroup()
     tab.value = 'assign'
     ui.success('作业已发布')
@@ -148,51 +193,113 @@ async function createAssignment() {
   }
 }
 
-async function submitAssignment(item) {
-  const text = window.prompt(`提交「${item.title}」的作业内容（可只上传文件）`, '')
-  if (text === null) return
-  const form = new FormData()
-  form.append('content', text || '')
-  const input = document.createElement('input')
-  input.type = 'file'
-  input.onchange = async () => {
-    if (input.files?.[0]) form.append('file', input.files[0])
-    try {
-      await api.upload(`/api/group-assignments/${item.id}/submit`, form)
-      ui.success('已提交')
-      await loadGroup()
-    } catch (error) {
-      ui.error(error.message)
+/* ---------------------------- 作业详情 ---------------------------- */
+async function openAssignment(item) {
+  detail.value = item
+  detailTab.value = 'in'
+  detailLoading.value = true
+  submissions.value = []
+  try {
+    if (isTeacher.value) {
+      submissions.value = await api.get(`/api/group-assignments/${item.id}/submissions`)
     }
+  } catch {
+    submissions.value = []
+  } finally {
+    detailLoading.value = false
   }
-  input.click()
 }
 
-async function viewSubmissions(item) {
+const studentsInGroup = computed(() =>
+  (current.value?.members || []).filter((m) => m.role === 'student'),
+)
+
+const submittedIds = computed(() => new Set(submissions.value.map((s) => Number(s.student_id))))
+
+const missingStudents = computed(() =>
+  studentsInGroup.value.filter((m) => !submittedIds.value.has(Number(m.id))),
+)
+
+function openSubmit(item) {
+  submitTarget.value = item
+  submitText.value = item?.my_submission?.content || ''
+  submitFile.value = null
+  submitPreview.value = item?.my_submission?.file_name || ''
+  showSubmit.value = true
+}
+
+function pickSubmitFile() {
+  submitFileInput.value?.click()
+}
+
+function onPickSubmitFile(event) {
+  const file = event.target.files?.[0]
+  if (!file) return
+  submitFile.value = file
+  submitPreview.value = `${file.name}（${(file.size / 1024).toFixed(0)} KB）`
+}
+
+async function doSubmit() {
+  if (!submitText.value.trim() && !submitFile.value) {
+    return ui.error('请填写内容或选择文件')
+  }
+  submitting.value = true
   try {
-    submissions.value = await api.get(`/api/group-assignments/${item.id}/submissions`)
+    const form = new FormData()
+    form.append('content', submitText.value.trim())
+    if (submitFile.value) form.append('file', submitFile.value)
+    await api.upload(`/api/group-assignments/${submitTarget.value.id}/submit`, form)
+    ui.success('提交成功')
+    showSubmit.value = false
+    await loadGroup()
+    const target = (current.value?.assignments || []).find(
+      (a) => Number(a.id) === Number(submitTarget.value.id),
+    )
+    if (target) await openAssignment(target)
   } catch (error) {
     ui.error(error.message)
+  } finally {
+    submitting.value = false
   }
 }
 
 async function grade(sub) {
-  const score = window.prompt(`给 ${sub.student_name} 打分（满分 100）`, sub.score ?? '')
+  const full = detail.value?.full_score || 100
+  const score = window.prompt(`给 ${sub.student_name} 打分（满分 ${full}）`, sub.score ?? '')
   if (score === null) return
   const feedback = window.prompt('评语（可留空）', sub.feedback || '') || ''
   try {
     await api.post(`/api/group-submissions/${sub.id}/grade`, { score: Number(score), feedback })
     ui.success('已打分')
-    await viewSubmissions({ id: sub.assignment_id })
+    await openAssignment(detail.value)
     await loadGroup()
   } catch (error) {
     ui.error(error.message)
   }
 }
 
-watch(() => route.params.id, (id) => { if (id) loadGroup() })
+async function downloadSubmission(sub) {
+  const token = localStorage.getItem('eduflow_token') || ''
+  const res = await fetch(`/api/group-submissions/${sub.id}/file`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) return ui.error('下载失败')
+  const blob = await res.blob()
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = sub.file_name || 'file'
+  a.click()
+  URL.revokeObjectURL(a.href)
+}
 
-onMounted(loadGroups)
+watch(() => route.params.id, (id) => {
+  if (id) loadGroup().then(scrollToBottom)
+})
+
+onMounted(async () => {
+  await loadGroups()
+  scrollToBottom()
+})
 </script>
 
 <template>
@@ -233,7 +340,7 @@ onMounted(loadGroups)
       <section v-if="current" class="card group-main">
         <div class="card-title">
           <span>{{ current.name }} · {{ current.members.length }} 人</span>
-          <span class="badge blue">{{ current.is_teacher ? '老师' : '学生' }}</span>
+          <span class="badge blue">{{ isTeacher ? '老师' : '学生' }}</span>
         </div>
 
         <div class="tabs">
@@ -243,17 +350,13 @@ onMounted(loadGroups)
           </div>
         </div>
 
+        <!-- 聊天 -->
         <template v-if="tab === 'chat'">
-          <div class="chat-box" ref="chatBox">
+          <div ref="chatBox" class="chat-box">
             <div v-if="current.messages.length >= limit" style="text-align: center; margin-bottom: 8px">
               <button class="btn sm" @click="loadMore">查看更早的消息</button>
             </div>
-            <div
-              v-for="m in current.messages"
-              :key="m.id"
-              class="msg-row"
-              :class="{ mine: isMine(m) }"
-            >
+            <div v-for="m in current.messages" :key="m.id" class="msg-row" :class="{ mine: isMine(m) }">
               <div class="msg-avatar" :class="roleBadge(m).cls">
                 {{ (m.sender_name || '?').slice(0, 1) }}
               </div>
@@ -263,12 +366,19 @@ onMounted(loadGroups)
                   <span class="role-pill" :class="roleBadge(m).cls">{{ roleBadge(m).text }}</span>
                   <span class="msg-time">{{ relativeTime(m.created_at) }}</span>
                 </div>
-                <div class="bubble" :class="{ mine: isMine(m) }">
-                  <div v-if="m.content" class="bubble-text">{{ m.content }}</div>
-                  <div v-if="m.kind === 'assignment'" class="bubble-assign">📋 {{ m.content }}</div>
+                <div
+                  class="bubble"
+                  :class="{ mine: isMine(m), clickable: m.kind === 'assignment' }"
+                  @click="m.kind === 'assignment' && openAssignmentFromMessage(m)"
+                >
+                  <div v-if="m.content && m.kind !== 'assignment'" class="bubble-text">{{ m.content }}</div>
+                  <div v-if="m.kind === 'assignment'" class="bubble-assign">
+                    <div class="assign-title">📋 {{ m.content }}</div>
+                    <div class="assign-hint">点击查看作业 · 提交 · 提交情况</div>
+                  </div>
                   <div v-if="m.file_name" class="bubble-file">
                     <span>{{ m.kind === 'image' ? '🖼' : '📎' }} {{ m.file_name }}</span>
-                    <button class="btn sm" @click="downloadMessage(m)">下载</button>
+                    <button class="btn sm" @click.stop="downloadMessage(m)">下载</button>
                   </div>
                 </div>
               </div>
@@ -284,58 +394,43 @@ onMounted(loadGroups)
           </div>
         </template>
 
+        <!-- 作业列表 -->
         <template v-else>
           <div class="row between" style="margin-bottom: 12px">
             <span class="muted small">共 {{ current.assignments.length }} 份作业</span>
-            <button v-if="current.is_teacher" class="btn primary sm" @click="showAssign = true">
-              发布作业
-            </button>
+            <button v-if="isTeacher" class="btn primary sm" @click="showAssign = true">发布作业</button>
           </div>
 
-          <div v-for="a in current.assignments" :key="a.id" class="assign-item">
-            <div class="row between">
-              <div>
-                <strong>{{ a.title }}</strong>
-                <div class="faint small">
-                  {{ a.teacher_name }} · 满分 {{ a.full_score }}
-                  <span v-if="a.deadline"> · 截止 {{ formatDate(a.deadline, true) }}</span>
-                </div>
-              </div>
-              <div class="row" style="gap: 8px">
-                <span class="badge gray">{{ a.submission_count }} 人已交</span>
-                <button v-if="current.is_teacher" class="btn sm" @click="viewSubmissions(a)">查看提交</button>
-                <template v-else>
-                  <span v-if="a.my_submission?.score != null" class="badge green">{{ a.my_submission.score }} 分</span>
-                  <button class="btn sm" @click="submitAssignment(a)">
-                    {{ a.my_submission ? '重新提交' : '提交作业' }}
-                  </button>
-                </template>
-              </div>
+          <div
+            v-for="a in current.assignments"
+            :key="a.id"
+            class="assign-card"
+            @click="openAssignment(a)"
+          >
+            <div class="assign-head">
+              <div class="assign-name">{{ a.title }}</div>
+              <span class="badge gray">{{ a.submission_count }} 人已交</span>
             </div>
-            <div v-if="a.content" class="msg-body" style="margin-top: 6px">{{ a.content }}</div>
+            <div class="assign-meta">
+              {{ a.teacher_name }} · 满分 {{ a.full_score }}
+              <span v-if="a.deadline"> · 截止 {{ formatDate(a.deadline, true) }}</span>
+            </div>
+            <div class="assign-foot">
+              <span v-if="!isTeacher" class="badge" :class="a.my_submission ? 'green' : 'yellow'">
+                {{ a.my_submission ? (a.my_submission.score != null ? `已批改 ${a.my_submission.score} 分` : '已提交') : '未提交' }}
+              </span>
+              <span class="assign-link">查看详情 →</span>
+            </div>
           </div>
           <div v-if="!current.assignments.length" class="empty">还没有作业</div>
-
-          <div v-if="submissions.length" class="card" style="margin-top: 14px">
-            <div class="card-title">提交列表</div>
-            <div v-for="s in submissions" :key="s.id" class="row between" style="padding: 8px 0; border-bottom: 1px solid var(--border)">
-              <div>
-                <strong>{{ s.student_name }}</strong>
-                <div class="faint small">{{ s.content || '（无文字内容）' }}</div>
-              </div>
-              <div class="row" style="gap: 8px">
-                <span v-if="s.score != null" class="badge green">{{ s.score }} 分</span>
-                <button class="btn sm" @click="grade(s)">打分</button>
-              </div>
-            </div>
-          </div>
         </template>
       </section>
       <section v-else class="card group-main empty">请选择一个班级群</section>
     </div>
 
+    <!-- 发布作业 -->
     <div v-if="showAssign" class="modal-mask" @click.self="showAssign = false">
-      <div class="modal">
+      <div class="modal" style="width: min(560px, 94vw)">
         <div class="modal-head"><h3>发布作业</h3></div>
         <div class="field">
           <label>标题</label>
@@ -343,21 +438,161 @@ onMounted(loadGroups)
         </div>
         <div class="field">
           <label>要求</label>
-          <textarea v-model="assignForm.content" class="textarea" placeholder="作业说明…" />
+          <textarea v-model="assignForm.content" class="textarea" rows="4" placeholder="作业说明…" />
         </div>
-        <div class="form-row">
+        <div class="grid cols-2" style="gap: 12px">
           <div class="field">
             <label>满分</label>
             <input v-model="assignForm.full_score" class="input" type="number" />
           </div>
           <div class="field">
             <label>截止时间</label>
-            <input v-model="assignForm.deadline" class="input" type="datetime-local" />
+            <div class="row" style="gap: 8px">
+              <input v-model="assignForm.date" class="input" type="date" />
+              <input v-model="assignForm.time" class="input" type="time" style="width: 118px" />
+            </div>
           </div>
+        </div>
+        <div class="row wrap" style="gap: 8px; margin-bottom: 12px">
+          <span class="faint small">快捷：</span>
+          <button v-for="p in presets" :key="p.label" class="btn sm" @click="applyPreset(p)">
+            {{ p.label }}
+          </button>
         </div>
         <div class="form-actions">
           <button class="btn" @click="showAssign = false">取消</button>
-          <button class="btn primary" @click="createAssignment">发布</button>
+          <button class="btn primary" @click="createAssignment">发布作业</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 作业详情 -->
+    <div v-if="detail" class="modal-mask" @click.self="detail = null">
+      <div class="modal" style="width: min(680px, 96vw)">
+        <div class="modal-head">
+          <h3>{{ detail.title }}</h3>
+          <button class="btn sm" @click="detail = null">关闭</button>
+        </div>
+
+        <div class="detail-meta">
+          满分 {{ detail.full_score || 100 }}
+          <span v-if="detail.deadline"> · 截止 {{ formatDate(detail.deadline, true) }}</span>
+        </div>
+        <p v-if="detail.content" class="detail-content">{{ detail.content }}</p>
+
+        <template v-if="isTeacher">
+          <div v-if="detailLoading" class="loading">加载中…</div>
+          <template v-else>
+            <div class="grid cols-3" style="margin: 14px 0">
+              <div class="stat">
+                <div class="stat-label">应交</div>
+                <div class="stat-value">{{ studentsInGroup.length }}</div>
+              </div>
+              <div class="stat">
+                <div class="stat-label">已交</div>
+                <div class="stat-value" style="color: var(--success)">{{ submissions.length }}</div>
+              </div>
+              <div class="stat">
+                <div class="stat-label">未交</div>
+                <div class="stat-value" style="color: var(--danger)">{{ missingStudents.length }}</div>
+              </div>
+            </div>
+
+            <div class="tabs" style="margin-bottom: 8px">
+              <div class="tab" :class="{ active: detailTab === 'in' }" @click="detailTab = 'in'">
+                已交（{{ submissions.length }}）
+              </div>
+              <div class="tab" :class="{ active: detailTab === 'out' }" @click="detailTab = 'out'">
+                未交（{{ missingStudents.length }}）
+              </div>
+            </div>
+
+            <div v-if="detailTab === 'in'" class="list-box">
+              <div v-for="s in submissions" :key="s.id" class="list-row">
+                <div>
+                  <strong>{{ s.student_name }}</strong>
+                  <div class="faint small">{{ s.content || '（无文字内容）' }}</div>
+                </div>
+                <div class="row" style="gap: 8px">
+                  <button v-if="s.file_name" class="btn sm" @click="downloadSubmission(s)">附件</button>
+                  <span v-if="s.score != null" class="badge green">{{ s.score }} 分</span>
+                  <button class="btn sm" @click="grade(s)">打分</button>
+                </div>
+              </div>
+              <div v-if="!submissions.length" class="empty">还没有人提交</div>
+            </div>
+
+            <div v-else class="list-box">
+              <div v-for="s in missingStudents" :key="s.id" class="list-row">
+                <span>{{ s.real_name }} <span class="faint small">{{ s.username }}</span></span>
+                <span class="badge red">未交</span>
+              </div>
+              <div v-if="!missingStudents.length" class="empty">全部交齐了 🎉</div>
+            </div>
+          </template>
+        </template>
+
+        <template v-else>
+          <div v-if="detail.my_submission" class="my-submission">
+            <div class="row between">
+              <strong>我的提交</strong>
+              <span v-if="detail.my_submission.score != null" class="badge green">
+                {{ detail.my_submission.score }} 分
+              </span>
+              <span v-else class="badge yellow">待批改</span>
+            </div>
+            <div v-if="detail.my_submission.content" class="detail-content">
+              {{ detail.my_submission.content }}
+            </div>
+            <div v-if="detail.my_submission.feedback" class="faint small">
+              评语：{{ detail.my_submission.feedback }}
+            </div>
+          </div>
+          <button class="btn primary block" style="margin-top: 14px" @click="openSubmit(detail)">
+            {{ detail.my_submission ? '重新提交' : '提交作业' }}
+          </button>
+        </template>
+      </div>
+    </div>
+
+    <!-- 提交作业 -->
+    <div v-if="showSubmit" class="modal-mask" @click.self="showSubmit = false">
+      <div class="modal" style="width: min(620px, 96vw)">
+        <div class="modal-head">
+          <h3>提交：{{ submitTarget?.title }}</h3>
+          <button class="btn sm" @click="showSubmit = false">关闭</button>
+        </div>
+
+        <div class="field">
+          <label>作业内容</label>
+          <textarea
+            v-model="submitText"
+            class="textarea"
+            rows="6"
+            placeholder="写出你的答案、思路、遇到的问题…"
+          />
+        </div>
+
+        <div class="field">
+          <label>图片 / 文件（可选）</label>
+          <div class="upload-box" @click="pickSubmitFile">
+            <input ref="submitFileInput" type="file" style="display: none" @change="onPickSubmitFile" />
+            <template v-if="submitPreview">
+              <span class="upload-name">📎 {{ submitPreview }}</span>
+              <button class="btn sm" @click.stop="submitFile = null; submitPreview = ''">移除</button>
+            </template>
+            <template v-else>
+              <span class="upload-icon">＋</span>
+              <span class="faint small">点击选择图片、文档或压缩包</span>
+            </template>
+          </div>
+        </div>
+
+        <div class="form-actions">
+          <button class="btn" @click="showSubmit = false">取消</button>
+          <button class="btn primary" :disabled="submitting" @click="doSubmit">
+            {{ submitting ? '提交中…' : '确认提交' }}
+          </button>
         </div>
       </div>
     </div>
@@ -365,40 +600,11 @@ onMounted(loadGroups)
 </template>
 
 <style scoped>
-.group-layout {
-  display: grid;
-  grid-template-columns: 240px 1fr;
-  gap: 16px;
-  align-items: start;
-}
-.group-item {
-  padding: 10px 12px;
-  border-radius: 10px;
-  cursor: pointer;
-  margin-bottom: 6px;
-}
+.group-layout { display: grid; grid-template-columns: 240px 1fr; gap: 16px; align-items: start; }
+.group-item { padding: 10px 12px; border-radius: 10px; cursor: pointer; margin-bottom: 6px; }
 .group-item:hover { background: #f3f9ff; }
 .group-item.active { background: linear-gradient(135deg, rgba(255,200,87,.25), rgba(255,138,61,.18)); }
-.chat-box { max-height: 46vh; overflow-y: auto; padding-right: 6px; }
 
-
-
-
-
-
-
-.chat-input { display: flex; gap: 8px; margin-top: 14px; }
-.assign-item { padding: 12px; border: 1px solid var(--border); border-radius: 12px; margin-bottom: 10px; background: #fff; }
-
-@media (max-width: 900px) {
-  .group-layout { grid-template-columns: 1fr; }
-  .chat-box { max-height: 52vh; }
-  .chat-input { flex-wrap: wrap; }
-  .chat-input .input { flex: 1 1 100%; }
-  .chat-input .btn { flex: 1 1 auto; }
-  .assign-item { padding: 10px; }
-}
-/* 微信式气泡 */
 .chat-box { max-height: 52vh; overflow-y: auto; padding: 4px 6px 4px 2px; }
 .msg-row { display: flex; gap: 10px; margin-bottom: 16px; align-items: flex-start; }
 .msg-row.mine { flex-direction: row-reverse; }
@@ -408,32 +614,63 @@ onMounted(loadGroups)
 }
 .msg-avatar.teacher { background: linear-gradient(135deg, #ffc857, #ff9f43); }
 .msg-avatar.student { background: linear-gradient(135deg, #6fb6ff, #3e8ef7); }
-.msg-main { max-width: 72%; min-width: 0; }
+.msg-main { max-width: 74%; min-width: 0; }
 .msg-head { display: flex; gap: 6px; align-items: center; margin-bottom: 4px; }
 .msg-head.right { justify-content: flex-end; }
 .msg-name { font-size: 12.5px; color: var(--text-dim); }
 .msg-time { font-size: 11px; color: var(--text-faint); }
-.role-pill {
-  font-size: 10.5px; padding: 1px 7px; border-radius: 999px; font-weight: 600;
-}
+.role-pill { font-size: 10.5px; padding: 1px 7px; border-radius: 999px; font-weight: 600; }
 .role-pill.teacher { background: #fff3d6; color: #a86a00; border: 1px solid #ffd88a; }
 .role-pill.student { background: #e3f0ff; color: #1a6fc4; border: 1px solid #b6d8ff; }
 .bubble {
   background: #fff; border: 1px solid var(--border); border-radius: 12px;
-  padding: 9px 12px; box-shadow: 0 2px 8px rgba(63, 110, 180, 0.06);
+  padding: 9px 12px; box-shadow: 0 2px 8px rgba(63,110,180,.06);
   display: inline-block; max-width: 100%; text-align: left;
 }
-.msg-row.mine .bubble {
-  background: linear-gradient(135deg, #ffb347, #ff8a3d);
-  border-color: transparent; color: #fff;
-}
+.bubble.clickable { cursor: pointer; }
+.bubble.clickable:hover { border-color: #ffb347; box-shadow: 0 6px 18px rgba(255,138,61,.18); }
+.msg-row.mine .bubble { background: linear-gradient(135deg,#ffb347,#ff8a3d); border-color: transparent; color: #fff; }
 .msg-row.mine .bubble .bubble-text { color: #fff; }
 .bubble-text { white-space: pre-wrap; word-break: break-word; font-size: 14px; line-height: 1.55; }
-.bubble-assign {
-  margin-top: 4px; padding: 6px 10px; border-radius: 8px;
-  background: rgba(255, 200, 87, 0.22); color: #8a5a00; font-size: 13px;
-}
-.msg-row.mine .bubble-assign { background: rgba(255,255,255,.25); color: #fff; }
+.bubble-assign { display: flex; flex-direction: column; gap: 2px; }
+.assign-title { font-weight: 650; }
+.assign-hint { font-size: 11.5px; opacity: .75; }
 .bubble-file { display: flex; gap: 10px; align-items: center; font-size: 13px; margin-top: 4px; }
 
+.chat-input { display: flex; gap: 8px; margin-top: 14px; }
+
+.assign-card {
+  border: 1px solid var(--border); border-radius: 14px; padding: 14px 16px; margin-bottom: 10px;
+  background: #fff; cursor: pointer; transition: box-shadow .15s, transform .15s;
+}
+.assign-card:hover { box-shadow: 0 10px 24px rgba(63,110,180,.14); transform: translateY(-1px); border-color: #ffc857; }
+.assign-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.assign-name { font-size: 15px; font-weight: 650; color: #1d3557; }
+.assign-meta { font-size: 12.5px; color: var(--text-dim); margin-top: 4px; }
+.assign-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; }
+.assign-link { font-size: 12.5px; color: var(--primary); font-weight: 600; }
+
+.detail-meta { font-size: 12.5px; color: var(--text-dim); margin-bottom: 8px; }
+.detail-content { white-space: pre-wrap; line-height: 1.6; margin: 6px 0 10px; }
+.list-box { max-height: 320px; overflow-y: auto; }
+.list-row { display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  padding: 9px 2px; border-bottom: 1px solid var(--border); }
+.my-submission { background: #f7fbff; border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
+
+.upload-box {
+  border: 2px dashed var(--border-strong); border-radius: 12px; padding: 18px;
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  cursor: pointer; background: #fbfdff; transition: border-color .15s, background .15s;
+}
+.upload-box:hover { border-color: var(--primary); background: #fff8f2; }
+.upload-icon { font-size: 20px; color: var(--primary); }
+.upload-name { font-size: 13px; color: #1d3557; }
+
+@media (max-width: 900px) {
+  .group-layout { grid-template-columns: 1fr; }
+  .chat-box { max-height: 46vh; }
+  .chat-input { flex-wrap: wrap; }
+  .chat-input .input { flex: 1 1 100%; }
+  .chat-input .btn { flex: 1 1 auto; }
+}
 </style>

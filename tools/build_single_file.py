@@ -47,6 +47,7 @@ MODULES: list[tuple[str, str]] = [
     ("notification_service", "backend/services/notification_service.py"),
     ("announcement_service", "backend/services/announcement_service.py"),
     ("attachment_service", "backend/services/attachment_service.py"),
+    ("group_service", "backend/services/group_service.py"),
     ("registration_service", "backend/services/registration_service.py"),
     ("user_service", "backend/services/user_service.py"),
     ("course_service", "backend/services/course_service.py"),
@@ -58,6 +59,7 @@ MODULES: list[tuple[str, str]] = [
     ("discussion_service", "backend/services/discussion_service.py"),
     ("chapter_service", "backend/services/chapter_service.py"),
     ("statistics_service", "backend/services/statistics_service.py"),
+    ("timetable_service", "backend/services/timetable_service.py"),
     ("request_lib", "backend/http/request.py"),
     ("router_lib", "backend/http/router.py"),
     ("multipart_lib", "backend/http/multipart.py"),
@@ -74,6 +76,8 @@ MODULES: list[tuple[str, str]] = [
     ("content_api", "backend/api/content_routes.py"),
     ("report_api", "backend/api/report_routes.py"),
     ("system_api", "backend/api/system_routes.py"),
+    ("group_api", "backend/api/group_routes.py"),
+    ("timetable_api", "backend/api/timetable_routes.py"),
 ]
 
 # 模块路径 -> 命名空间变量名

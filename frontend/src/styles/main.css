@@ -1212,3 +1212,58 @@ tbody tr:hover { background: #f8fbff; }
 @media (max-width: 820px) {
   .toast-wrap { bottom: 14px; left: 12px; right: 12px; }
 }
+/* ============================================================
+   视觉升级：更阳光、更大气
+   ============================================================ */
+.page-head h1 {
+  font-size: 26px;
+  letter-spacing: -0.4px;
+  background: linear-gradient(120deg, #1d3557 20%, #2f80ed 70%, #ff8a3d 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.page-head p { font-size: 13px; color: var(--text-dim); }
+
+.card {
+  position: relative;
+  overflow: hidden;
+}
+.card::before {
+  content: '';
+  position: absolute; inset: 0 0 auto 0; height: 3px;
+  background: linear-gradient(90deg, #ffc857, #ff8a3d, #3ea8ff);
+  opacity: 0;
+  transition: opacity .2s;
+}
+.card:hover::before { opacity: .85; }
+
+.stat {
+  position: relative;
+  border-left: 4px solid rgba(255, 138, 61, 0.55);
+}
+.grid.cols-4 .stat:nth-child(2) { border-left-color: rgba(31, 181, 115, 0.55); }
+.grid.cols-4 .stat:nth-child(3) { border-left-color: rgba(62, 168, 255, 0.55); }
+.grid.cols-4 .stat:nth-child(4) { border-left-color: rgba(124, 92, 255, 0.45); }
+
+.card-title { font-size: 15px; font-weight: 650; color: #1d3557; }
+
+.tabs { gap: 4px; border-bottom: 1px solid var(--border); }
+.tab {
+  padding: 8px 14px; border-radius: 10px 10px 0 0; font-weight: 500;
+}
+.tab.active { background: linear-gradient(180deg, rgba(255,200,87,.18), transparent); }
+
+.btn.primary { letter-spacing: .3px; }
+
+.table-wrap { border-radius: 14px; }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb {
+  background: #d7e5f5; border-radius: 999px; border: 2px solid transparent; background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background: #c0d6ee; background-clip: content-box; }
+::-webkit-scrollbar-track { background: transparent; }
+
+.modal-head h3 { font-size: 17px; }
+.form-actions { margin-top: 16px; }

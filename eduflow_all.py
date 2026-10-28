@@ -1798,7 +1798,9 @@ def _mod_static_lib(ForbiddenError, NotFoundError, Response, STATIC_CACHE_SECOND
                     if index.is_file():
                         return self._read(index, url_path, cache=False)
                 raise NotFoundError(f"静态资源不存在：{url_path}")
-            return self._read(target, url_path, cache=cache)
+            # index.html 绝不能被缓存，否则升级后前端仍是旧版本（表现为按钮点了没反应）
+            is_index = target.name == "index.html"
+            return self._read(target, url_path, cache=cache and not is_index)
 
         def _read(self, path: Path, url_path: str, *, cache: bool) -> Response:
             mime, _ = mimetypes.guess_type(str(path))
@@ -1814,7 +1816,8 @@ def _mod_static_lib(ForbiddenError, NotFoundError, Response, STATIC_CACHE_SECOND
             if cache:
                 headers["Cache-Control"] = f"public, max-age={STATIC_CACHE_SECONDS}"
             else:
-                headers["Cache-Control"] = "no-cache"
+                headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                headers["Pragma"] = "no-cache"
             # 带 hash 的构建产物可以长缓存
             if "/assets/" in url_path:
                 headers["Cache-Control"] = "public, max-age=31536000, immutable"
@@ -2120,7 +2123,7 @@ def _mod_migrations(clock, config, connection):
 
 
     SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
-    CURRENT_VERSION = 4
+    CURRENT_VERSION = 8
 
 
     def _read_schema() -> str:
@@ -2231,11 +2234,166 @@ def _mod_migrations(clock, config, connection):
         )
 
 
+    def _migrate_v5(conn: sqlite3.Connection) -> None:
+        """v4 -> v5：班级群、群消息、群作业、课程推荐。"""
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS class_groups (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                name       TEXT NOT NULL UNIQUE,
+                teacher_id INTEGER REFERENCES users(id),
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS group_members (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id  INTEGER NOT NULL REFERENCES class_groups(id) ON DELETE CASCADE,
+                user_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                role      TEXT NOT NULL,
+                joined_at TEXT NOT NULL,
+                UNIQUE (group_id, user_id)
+            );
+            CREATE TABLE IF NOT EXISTS group_messages (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id    INTEGER NOT NULL REFERENCES class_groups(id) ON DELETE CASCADE,
+                sender_id   INTEGER NOT NULL REFERENCES users(id),
+                kind        TEXT NOT NULL DEFAULT 'text',
+                content     TEXT NOT NULL DEFAULT '',
+                file_name   TEXT,
+                stored_name TEXT,
+                size        INTEGER DEFAULT 0,
+                mime        TEXT,
+                ref_id      INTEGER,
+                created_at  TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_group_messages ON group_messages(group_id, id);
+            CREATE TABLE IF NOT EXISTS group_assignments (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id   INTEGER NOT NULL REFERENCES class_groups(id) ON DELETE CASCADE,
+                title      TEXT NOT NULL,
+                content    TEXT NOT NULL DEFAULT '',
+                full_score REAL NOT NULL DEFAULT 100,
+                deadline   TEXT,
+                created_by INTEGER NOT NULL REFERENCES users(id),
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS group_submissions (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                assignment_id INTEGER NOT NULL REFERENCES group_assignments(id) ON DELETE CASCADE,
+                student_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                content       TEXT NOT NULL DEFAULT '',
+                file_name     TEXT,
+                stored_name   TEXT,
+                size          INTEGER DEFAULT 0,
+                mime          TEXT,
+                score         REAL,
+                feedback      TEXT,
+                graded_by     INTEGER,
+                graded_at     TEXT,
+                created_at    TEXT NOT NULL,
+                updated_at    TEXT NOT NULL,
+                UNIQUE (assignment_id, student_id)
+            );
+            CREATE TABLE IF NOT EXISTS course_offers (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                course_id  INTEGER NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+                status     TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE (user_id, course_id)
+            );
+            """
+        )
+
+
+
+    def _migrate_v6(conn: sqlite3.Connection) -> None:
+        """v5 -> v6：课表。"""
+        from backend.core import clock
+
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS timetable (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                class_name   TEXT NOT NULL,
+                weekday      INTEGER NOT NULL,
+                period       INTEGER NOT NULL,
+                course_name  TEXT NOT NULL,
+                teacher_name TEXT DEFAULT '',
+                room         TEXT DEFAULT '',
+                note         TEXT DEFAULT '',
+                created_at   TEXT NOT NULL,
+                updated_at   TEXT NOT NULL,
+                UNIQUE (class_name, weekday, period)
+            );
+            CREATE INDEX IF NOT EXISTS idx_timetable_class ON timetable(class_name, weekday, period);
+            """
+        )
+        # 示例课表：大数据G231
+        seed = [
+            (1, 1, "大数据技术", "王老师", "A301"),
+            (1, 2, "Python 程序设计", "李老师", "机房 2"),
+            (1, 3, "高等数学", "赵老师", "B102"),
+            (2, 1, "数据结构", "孙老师", "A305"),
+            (2, 2, "大学英语", "周老师", "C201"),
+            (3, 1, "数据库原理", "王老师", "A301"),
+            (3, 3, "体育", "吴老师", "操场"),
+            (4, 1, "大数据技术", "王老师", "A301"),
+            (4, 2, "职业规划", "郑老师", "B203"),
+            (5, 1, "Python 程序设计", "李老师", "机房 2"),
+        ]
+        now = clock.now_iso()
+        for weekday, period, course, teacher, room in seed:
+            conn.execute(
+                """INSERT OR IGNORE INTO timetable
+                       (class_name, weekday, period, course_name, teacher_name, room, created_at, updated_at)
+                   VALUES ('大数据G231', ?, ?, ?, ?, ?, ?, ?)""",
+                (weekday, period, course, teacher, room, now, now),
+            )
+
+
+
+    def _migrate_v7(conn: sqlite3.Connection) -> None:
+        """v6 -> v7：催交记录。"""
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS assignment_reminders (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                assignment_id INTEGER NOT NULL REFERENCES assignments(id) ON DELETE CASCADE,
+                student_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                operator_id   INTEGER NOT NULL REFERENCES users(id),
+                created_at    TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_reminders ON assignment_reminders(assignment_id, created_at);
+            """
+        )
+
+
+
+    def _migrate_v8(conn: sqlite3.Connection) -> None:
+        """v7 -> v8：课表增加学期与周次。"""
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(timetable)")}
+        if "semester" not in cols:
+            conn.execute("ALTER TABLE timetable ADD COLUMN semester TEXT NOT NULL DEFAULT ''")
+        if "weeks" not in cols:
+            conn.execute("ALTER TABLE timetable ADD COLUMN weeks TEXT NOT NULL DEFAULT '1-20'")
+        conn.execute(
+            "UPDATE timetable SET semester = '2026-2027-1' WHERE semester = '' OR semester IS NULL"
+        )
+
+
     MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
+
+
+
         (1, _migrate_v1),
         (2, _migrate_v2),
         (3, _migrate_v3),
         (4, _migrate_v4),
+        (5, _migrate_v5),
+        (6, _migrate_v6),
+        (7, _migrate_v7),
+        (8, _migrate_v8),
     ]
 
 
@@ -2297,6 +2455,14 @@ def _mod_migrations(clock, config, connection):
             "discussion_replies",
             "discussions",
             "announcements",
+            "group_messages",
+            "group_submissions",
+            "group_assignments",
+            "group_members",
+            "course_offers",
+            "class_groups",
+            "timetable",
+            "assignment_reminders",
             "assignment_files",
             "task_progress",
             "tasks",
@@ -2555,10 +2721,16 @@ def _mod_users_repo(BaseRepository, clock, connection):
         )
 
         def by_username(self, username: str) -> dict[str, Any] | None:
-            return self.find_by(username=username)
+            """用户名不区分大小写（PPPPP 和 ppppp 视为同一个）。"""
+            return connection.query_one(
+                "SELECT * FROM users WHERE username = ? COLLATE NOCASE LIMIT 1",
+                (username,),
+            )
 
         def by_number(self, number: str) -> dict[str, Any] | None:
-            return self.find_by(number=number)
+            return connection.query_one(
+                "SELECT * FROM users WHERE number = ? COLLATE NOCASE LIMIT 1", (number,)
+            )
 
         def list_by_role(self, role: str, *, keyword: str = "",
                          limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
@@ -5125,9 +5297,560 @@ def _mod_attachment_service(AuditRepository, ClassRepository, EnrollmentReposito
 
 
 # ======================================================================
+# 模块：backend/services/group_service.py
+# ======================================================================
+def _mod_group_service(AuditRepository, ForbiddenError, NotFoundError, UserRepository, ValidationError, clock, config, connection, ids, permissions, safe_join, validators):
+    """班级群：同班师生自动成群，群内发消息、发作业、交作业、批改。"""
+
+
+    import math
+    import mimetypes
+    import re
+    from typing import Any
+
+
+    user_repo = UserRepository()
+    audit_repo = AuditRepository()
+
+
+    # ---------------------------------------------------------------------------
+    # 工具
+    # ---------------------------------------------------------------------------
+
+
+    def _now() -> str:
+        return clock.now_iso()
+
+
+    def _store_file(filename: str, content: bytes, prefix: str = "g") -> dict[str, Any]:
+        if not content:
+            raise ValidationError("文件内容为空")
+        if len(content) > config.MAX_UPLOAD_BYTES:
+            raise ValidationError("文件不能超过 64 MB")
+        name = "".join(ch for ch in (filename or "file") if ch.isprintable() and ch not in '<>:"|?*')[:120] or "file"
+        stored = f"{prefix}_{ids.new_filename_token()}_{name}"
+        target = safe_join(config.UPLOAD_DIR, stored)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+        mime, _ = mimetypes.guess_type(name)
+        return {
+            "file_name": name,
+            "stored_name": stored,
+            "size": len(content),
+            "mime": mime or "application/octet-stream",
+        }
+
+
+    def _member(group_id: int, user_id: int) -> dict[str, Any] | None:
+        return connection.query_one(
+            "SELECT * FROM group_members WHERE group_id = ? AND user_id = ?",
+            (group_id, user_id),
+        )
+
+
+    def _group_or_fail(group_id: int) -> dict[str, Any]:
+        row = connection.query_one("SELECT * FROM class_groups WHERE id = ?", (group_id,))
+        if row is None:
+            raise NotFoundError("班级群不存在")
+        return row
+
+
+    def _assert_member(user: dict[str, Any], group_id: int) -> dict[str, Any]:
+        group = _group_or_fail(group_id)
+        if user["role"] == permissions.ROLE_ADMIN:
+            return group
+        if _member(group_id, int(user["id"])) is None:
+            raise ForbiddenError("你不在这个班级群里")
+        return group
+
+
+    # ---------------------------------------------------------------------------
+    # 建群 / 入群
+    # ---------------------------------------------------------------------------
+
+
+    def ensure_group(name: str, teacher_id: int | None = None) -> dict[str, Any]:
+        name = (name or "").strip()
+        if not name:
+            raise ValidationError("班级名称不能为空")
+        row = connection.query_one("SELECT * FROM class_groups WHERE name = ?", (name,))
+        if row:
+            if teacher_id and not row.get("teacher_id"):
+                connection.execute(
+                    "UPDATE class_groups SET teacher_id = ? WHERE id = ?", (teacher_id, row["id"])
+                )
+                row["teacher_id"] = teacher_id
+            return row
+        gid = connection.execute(
+            "INSERT INTO class_groups (name, teacher_id, created_at) VALUES (?, ?, ?)",
+            (name, teacher_id, _now()),
+        )
+        return connection.query_one("SELECT * FROM class_groups WHERE id = ?", (gid,)) or {}
+
+
+    def join_group_by_name(user: dict[str, Any], class_name: str) -> dict[str, Any]:
+        """注册时调用：按班级名入群，教师自动成为群主。"""
+        teacher_id = int(user["id"]) if user["role"] == permissions.ROLE_TEACHER else None
+        group = ensure_group(class_name, teacher_id)
+        existing = _member(int(group["id"]), int(user["id"]))
+        if existing is None:
+            connection.execute(
+                "INSERT INTO group_members (group_id, user_id, role, joined_at) VALUES (?, ?, ?, ?)",
+                (int(group["id"]), int(user["id"]), user["role"], _now()),
+            )
+        return group
+
+
+    def groups_for_user(user: dict[str, Any]) -> list[dict[str, Any]]:
+        if user["role"] == permissions.ROLE_ADMIN:
+            return connection.query_all(
+                """SELECT g.*, (SELECT COUNT(*) FROM group_members m WHERE m.group_id = g.id) AS member_count
+                     FROM class_groups g ORDER BY g.id DESC"""
+            )
+        return connection.query_all(
+            """SELECT g.*, (SELECT COUNT(*) FROM group_members m2 WHERE m2.group_id = g.id) AS member_count
+                 FROM class_groups g
+                 JOIN group_members m ON m.group_id = g.id AND m.user_id = ?
+                ORDER BY g.id DESC""",
+            (int(user["id"]),),
+        )
+
+
+    def group_detail(user: dict[str, Any], group_id: int, limit: int = 100) -> dict[str, Any]:
+        group = _assert_member(user, group_id)
+        members = connection.query_all(
+            """SELECT u.id, u.real_name, u.username, u.role, m.role AS member_role
+                 FROM group_members m JOIN users u ON u.id = m.user_id
+                WHERE m.group_id = ? ORDER BY m.role DESC, u.id""",
+            (group_id,),
+        )
+        messages = connection.query_all(
+            """SELECT gm.*, u.real_name AS sender_name, u.role AS sender_role
+                 FROM group_messages gm JOIN users u ON u.id = gm.sender_id
+                WHERE gm.group_id = ? ORDER BY gm.id DESC LIMIT ?""",
+            (group_id, limit),
+        )
+        messages.reverse()
+        assignments = list_assignments(group_id, viewer=user)
+        group["members"] = members
+        group["messages"] = messages
+        group["assignments"] = assignments
+        group["is_teacher"] = user["role"] in (permissions.ROLE_TEACHER, permissions.ROLE_ADMIN) or int(
+            group.get("teacher_id") or 0
+        ) == int(user["id"])
+        return group
+
+
+    # ---------------------------------------------------------------------------
+    # 群消息
+    # ---------------------------------------------------------------------------
+
+
+    def post_message(user: dict[str, Any], group_id: int, *, content: str = "",
+                     file: tuple[str, bytes] | None = None) -> dict[str, Any]:
+        _assert_member(user, group_id)
+        content = (content or "").strip()
+        info: dict[str, Any] = {}
+        kind = "text"
+        if file is not None:
+            info = _store_file(file[0], file[1], prefix="gm")
+            kind = "image" if (info["mime"] or "").startswith("image/") else "file"
+        if not content and not info:
+            raise ValidationError("消息内容不能为空")
+
+        mid = connection.execute(
+            """INSERT INTO group_messages
+                   (group_id, sender_id, kind, content, file_name, stored_name, size, mime, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (group_id, int(user["id"]), kind, content, info.get("file_name"),
+             info.get("stored_name"), info.get("size", 0), info.get("mime"), _now()),
+        )
+        return connection.query_one(
+            """SELECT gm.*, u.real_name AS sender_name FROM group_messages gm
+                 JOIN users u ON u.id = gm.sender_id WHERE gm.id = ?""",
+            (mid,),
+        ) or {}
+
+
+    def message_file(user: dict[str, Any], message_id: int) -> tuple[Any, str]:
+        row = connection.query_one("SELECT * FROM group_messages WHERE id = ?", (message_id,))
+        if row is None or not row.get("stored_name"):
+            raise NotFoundError("附件不存在")
+        _assert_member(user, int(row["group_id"]))
+        path = safe_join(config.UPLOAD_DIR, row["stored_name"])
+        if not path.exists():
+            raise NotFoundError("文件已丢失")
+        return path, row.get("file_name") or "file"
+
+
+    # ---------------------------------------------------------------------------
+    # 群作业
+    # ---------------------------------------------------------------------------
+
+
+    def create_assignment(user: dict[str, Any], group_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        group = _assert_member(user, group_id)
+        is_teacher = user["role"] in (permissions.ROLE_TEACHER, permissions.ROLE_ADMIN) or int(
+            group.get("teacher_id") or 0
+        ) == int(user["id"])
+        if not is_teacher:
+            raise ForbiddenError("只有老师可以发布作业")
+
+        title = validators.required_str(payload, "title", min_len=1, max_len=120)
+        content = validators.optional_str(payload, "content", "", max_len=20000)
+        full_score = validators.optional_float(payload, "full_score", 100, min_value=1, max_value=1000)
+        deadline = validators.validate_date(payload.get("deadline"), "截止时间", required_field=False) or None
+
+        aid = connection.execute(
+            """INSERT INTO group_assignments
+                   (group_id, title, content, full_score, deadline, created_by, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (group_id, title, content, full_score, deadline, int(user["id"]), _now()),
+        )
+        # 群里发一条作业通知消息
+        connection.execute(
+            """INSERT INTO group_messages (group_id, sender_id, kind, content, ref_id, created_at)
+               VALUES (?, ?, 'assignment', ?, ?, ?)""",
+            (group_id, int(user["id"]), title, aid, _now()),
+        )
+        audit_repo.log(
+            user_id=int(user["id"]), username=user["username"], action="group_assignment",
+            entity="group_assignment", entity_id=aid, detail=f"{group['name']} / {title}",
+        )
+        return connection.query_one("SELECT * FROM group_assignments WHERE id = ?", (aid,)) or {}
+
+
+    def list_assignments(group_id: int, *, viewer: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        rows = connection.query_all(
+            """SELECT a.*, u.real_name AS teacher_name,
+                      (SELECT COUNT(*) FROM group_submissions s WHERE s.assignment_id = a.id) AS submission_count
+                 FROM group_assignments a LEFT JOIN users u ON u.id = a.created_by
+                WHERE a.group_id = ? ORDER BY a.id DESC""",
+            (group_id,),
+        )
+        if viewer and viewer["role"] == permissions.ROLE_STUDENT:
+            for row in rows:
+                mine = connection.query_one(
+                    "SELECT * FROM group_submissions WHERE assignment_id = ? AND student_id = ?",
+                    (int(row["id"]), int(viewer["id"])),
+                )
+                row["my_submission"] = mine
+        return rows
+
+
+    def submit(user: dict[str, Any], assignment_id: int, *, content: str = "",
+               file: tuple[str, bytes] | None = None) -> dict[str, Any]:
+        row = connection.query_one("SELECT * FROM group_assignments WHERE id = ?", (assignment_id,))
+        if row is None:
+            raise NotFoundError("作业不存在")
+        _assert_member(user, int(row["group_id"]))
+        if user["role"] != permissions.ROLE_STUDENT:
+            raise ForbiddenError("只有学生需要提交作业")
+
+        info: dict[str, Any] = {}
+        if file is not None:
+            info = _store_file(file[0], file[1], prefix="gs")
+        content = (content or "").strip()
+        if not content and not info:
+            raise ValidationError("请填写内容或上传文件")
+
+        existing = connection.query_one(
+            "SELECT id FROM group_submissions WHERE assignment_id = ? AND student_id = ?",
+            (assignment_id, int(user["id"])),
+        )
+        if existing:
+            connection.execute(
+                """UPDATE group_submissions
+                      SET content = ?, file_name = ?, stored_name = ?, size = ?, mime = ?, updated_at = ?
+                    WHERE id = ?""",
+                (content, info.get("file_name"), info.get("stored_name"), info.get("size", 0),
+                 info.get("mime"), _now(), existing["id"]),
+            )
+            sid = existing["id"]
+        else:
+            sid = connection.execute(
+                """INSERT INTO group_submissions
+                       (assignment_id, student_id, content, file_name, stored_name, size, mime, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (assignment_id, int(user["id"]), content, info.get("file_name"),
+                 info.get("stored_name"), info.get("size", 0), info.get("mime"), _now(), _now()),
+            )
+        return connection.query_one("SELECT * FROM group_submissions WHERE id = ?", (sid,)) or {}
+
+
+    def list_submissions(user: dict[str, Any], assignment_id: int) -> list[dict[str, Any]]:
+        row = connection.query_one("SELECT * FROM group_assignments WHERE id = ?", (assignment_id,))
+        if row is None:
+            raise NotFoundError("作业不存在")
+        group = _assert_member(user, int(row["group_id"]))
+        is_teacher = user["role"] in (permissions.ROLE_TEACHER, permissions.ROLE_ADMIN) or int(
+            group.get("teacher_id") or 0
+        ) == int(user["id"])
+        if not is_teacher:
+            raise ForbiddenError("只有老师可以查看全部提交")
+        return connection.query_all(
+            """SELECT s.*, u.real_name AS student_name, u.username
+                 FROM group_submissions s JOIN users u ON u.id = s.student_id
+                WHERE s.assignment_id = ? ORDER BY s.updated_at DESC""",
+            (assignment_id,),
+        )
+
+
+    def grade_submission(user: dict[str, Any], submission_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        row = connection.query_one("SELECT * FROM group_submissions WHERE id = ?", (submission_id,))
+        if row is None:
+            raise NotFoundError("提交记录不存在")
+        ass = connection.query_one("SELECT * FROM group_assignments WHERE id = ?", (int(row["assignment_id"]),))
+        group = _assert_member(user, int(ass["group_id"]))
+        is_teacher = user["role"] in (permissions.ROLE_TEACHER, permissions.ROLE_ADMIN) or int(
+            group.get("teacher_id") or 0
+        ) == int(user["id"])
+        if not is_teacher:
+            raise ForbiddenError("只有老师可以打分")
+
+        full = float(ass.get("full_score") or 100)
+        score = validators.validate_score(payload.get("score"), full)
+        feedback = validators.optional_str(payload, "feedback", "", max_len=2000)
+        connection.execute(
+            "UPDATE group_submissions SET score = ?, feedback = ?, graded_by = ?, graded_at = ? WHERE id = ?",
+            (score, feedback, int(user["id"]), _now(), submission_id),
+        )
+        return connection.query_one("SELECT * FROM group_submissions WHERE id = ?", (submission_id,)) or {}
+
+
+    def submission_file(user: dict[str, Any], submission_id: int) -> tuple[Any, str]:
+        row = connection.query_one("SELECT * FROM group_submissions WHERE id = ?", (submission_id,))
+        if row is None or not row.get("stored_name"):
+            raise NotFoundError("附件不存在")
+        ass = connection.query_one("SELECT * FROM group_assignments WHERE id = ?", (int(row["assignment_id"]),))
+        group = _assert_member(user, int(ass["group_id"]))
+        is_teacher = user["role"] in (permissions.ROLE_TEACHER, permissions.ROLE_ADMIN) or int(
+            group.get("teacher_id") or 0
+        ) == int(user["id"])
+        if not is_teacher and int(row["student_id"]) != int(user["id"]):
+            raise ForbiddenError("无权下载")
+        path = safe_join(config.UPLOAD_DIR, row["stored_name"])
+        if not path.exists():
+            raise NotFoundError("文件已丢失")
+        return path, row.get("file_name") or "file"
+
+
+    # ---------------------------------------------------------------------------
+    # 课程推荐
+    # ---------------------------------------------------------------------------
+
+
+    def _keywords(class_name: str) -> list[str]:
+        """大数据G231 -> ['大数据']；计算机应用2301 -> ['计算机应用']"""
+        raw = (class_name or "").strip()
+        if not raw:
+            return []
+        parts = re.split(r"[0-9A-Za-z\-_]+", raw)
+        return [p.strip() for p in parts if len(p.strip()) >= 2]
+
+
+    def refresh_offers(user: dict[str, Any]) -> list[dict[str, Any]]:
+        """按班级关键词给该学生生成课程推荐（已接受/拒绝的不再出现）。"""
+        if user["role"] != permissions.ROLE_STUDENT:
+            return []
+        class_name = user.get("class_name") or ""
+        kws = _keywords(class_name)
+        enrolled = {
+            int(r["course_id"])
+            for r in connection.query_all(
+                """SELECT cl.course_id FROM enrollments e JOIN classes cl ON cl.id = e.class_id
+                    WHERE e.student_id = ? AND e.status = 'active'""",
+                (int(user["id"]),),
+            )
+        }
+        courses = connection.query_all("SELECT * FROM courses WHERE status = 'active'")
+        matched = []
+        for c in courses:
+            if int(c["id"]) in enrolled:
+                continue
+            hit = any(k in (c["name"] or "") or k in (c["category"] or "") for k in kws) if kws else True
+            if hit:
+                matched.append(c)
+        for c in matched:
+            existing = connection.query_one(
+                "SELECT * FROM course_offers WHERE user_id = ? AND course_id = ?",
+                (int(user["id"]), int(c["id"])),
+            )
+            if existing is None:
+                connection.execute(
+                    "INSERT INTO course_offers (user_id, course_id, status, created_at, updated_at) VALUES (?, ?, 'pending', ?, ?)",
+                    (int(user["id"]), int(c["id"]), _now(), _now()),
+                )
+        return connection.query_all(
+            """SELECT o.id AS offer_id, o.status, c.id AS course_id, c.code, c.name, c.credits,
+                      c.category, u.real_name AS teacher_name
+                 FROM course_offers o
+                 JOIN courses c ON c.id = o.course_id
+                 LEFT JOIN users u ON u.id = c.teacher_id
+                WHERE o.user_id = ? AND o.status = 'pending'
+                ORDER BY o.id DESC""",
+            (int(user["id"]),),
+        )
+
+
+    def respond_offer(user: dict[str, Any], offer_id: int, accept: bool) -> dict[str, Any]:
+        row = connection.query_one(
+            "SELECT * FROM course_offers WHERE id = ? AND user_id = ?", (offer_id, int(user["id"]))
+        )
+        if row is None:
+            raise NotFoundError("推荐不存在")
+        status = "accepted" if accept else "rejected"
+        connection.execute(
+            "UPDATE course_offers SET status = ?, updated_at = ? WHERE id = ?", (status, _now(), offer_id)
+        )
+        joined = None
+        if accept:
+            target = connection.query_one(
+                "SELECT * FROM classes WHERE course_id = ? ORDER BY id LIMIT 1", (int(row["course_id"]),)
+            )
+            if target:
+                exists = connection.query_one(
+                    "SELECT id FROM enrollments WHERE class_id = ? AND student_id = ?",
+                    (int(target["id"]), int(user["id"])),
+                )
+                if exists:
+                    connection.execute(
+                        "UPDATE enrollments SET status = 'active' WHERE id = ?", (exists["id"],)
+                    )
+                else:
+                    connection.execute(
+                        """INSERT INTO enrollments (class_id, student_id, status, source, created_at)
+                           VALUES (?, ?, 'active', 'offer', ?)""",
+                        (int(target["id"]), int(user["id"]), _now()),
+                    )
+                joined = {"class_id": int(target["id"]), "class_name": target["name"]}
+        return {"offer_id": offer_id, "status": status, "joined_class": joined}
+    return SimpleNamespace(
+        user_repo=user_repo,
+        audit_repo=audit_repo,
+        ensure_group=ensure_group,
+        join_group_by_name=join_group_by_name,
+        groups_for_user=groups_for_user,
+        group_detail=group_detail,
+        post_message=post_message,
+        message_file=message_file,
+        create_assignment=create_assignment,
+        list_assignments=list_assignments,
+        submit=submit,
+        list_submissions=list_submissions,
+        grade_submission=grade_submission,
+        submission_file=submission_file,
+        refresh_offers=refresh_offers,
+        respond_offer=respond_offer,
+    )
+
+
+# ======================================================================
+# 模块：backend/services/registration_service.py
+# ======================================================================
+def _mod_registration_service(AuditRepository, ConflictError, UserRepository, ValidationError, group_service, permissions, security, validators):
+    """自助注册：学生和教师共用。
+
+    只要姓名、学号/工号、密码；用户名就是姓名（重名自动加序号）。
+    不填邀请码，入班由教师后续添加或学生自己用邀请码加入。
+    """
+
+
+    from typing import Any
+
+
+    user_repo = UserRepository()
+    audit_repo = AuditRepository()
+
+    ALLOWED_ROLES = (permissions.ROLE_STUDENT, permissions.ROLE_TEACHER)
+
+
+    def _unique_username(base: str) -> str:
+        """用户名默认等于姓名；重名时依次加 2、3……"""
+        name = base.strip()
+        if not user_repo.by_username(name):
+            return name
+        for i in range(2, 200):
+            candidate = f"{name}{i}"
+            if not user_repo.by_username(candidate):
+                return candidate
+        raise ConflictError("同名账号过多，请换一个名字注册")
+
+
+    def register(payload: dict[str, Any], *, ip: str = "") -> dict[str, Any]:
+        real_name = validators.required_str(payload, "real_name", min_len=1, max_len=32)
+        number = validators.required_str(payload, "number", min_len=2, max_len=32)
+        password = validators.required_str(payload, "password", min_len=6, max_len=128, strip=False)
+        role = validators.optional_str(payload, "role", permissions.ROLE_STUDENT, max_len=16)
+        if role not in ALLOWED_ROLES:
+            raise ValidationError("只能注册为学生或教师")
+
+        class_name = validators.required_str(payload, "class_name", min_len=2, max_len=64)
+
+        if user_repo.by_number(number):
+            raise ConflictError("该学号/工号已存在账号，无法重复注册，请直接登录")
+
+        username = _unique_username(real_name)
+        digest, salt = security.hash_password(password)
+
+        user_id = user_repo.insert(
+            {
+                "username": username,
+                "password_hash": digest,
+                "password_salt": salt,
+                "role": role,
+                "real_name": real_name,
+                "number": number,
+                "class_name": class_name,
+                "status": "active",
+                "must_change_password": 0,
+            }
+        )
+
+        joined_group = None
+        if class_name:
+            group = group_service.join_group_by_name(
+                {"id": user_id, "role": role, "username": username}, class_name
+            )
+            joined_group = {"id": int(group["id"]), "name": group["name"]}
+
+            audit_repo.log(
+            user_id=user_id,
+            username=username,
+            action="self_register",
+            entity="user",
+            entity_id=user_id,
+            detail=f"{permissions.ROLE_LABELS.get(role, role)}自助注册（{ip}）",
+            ip=ip,
+        )
+        if role == permissions.ROLE_STUDENT:
+            try:
+                group_service.refresh_offers(user_repo.find(user_id) or {})
+            except Exception:  # noqa: BLE001
+                pass
+
+        return {
+            "joined_group": joined_group,
+            "user": {
+                "id": user_id,
+                "username": username,
+                "real_name": real_name,
+                "role": role,
+            },
+            "login_hint": f"用户名就是你的姓名：{username}",
+        }
+    return SimpleNamespace(
+        user_repo=user_repo,
+        audit_repo=audit_repo,
+        ALLOWED_ROLES=ALLOWED_ROLES,
+        register=register,
+    )
+
+
+# ======================================================================
 # 模块：backend/services/user_service.py
 # ======================================================================
-def _mod_user_service(AuditRepository, ConflictError, NotFoundError, SessionRepository, UserRepository, ValidationError, auth_service, clock, config, permissions, security, validators):
+def _mod_user_service(AuditRepository, ConflictError, NotFoundError, SessionRepository, UserRepository, ValidationError, auth_service, clock, config, connection, permissions, security, validators):
     """用户管理服务：增删改查、批量导入、状态切换。"""
 
 
@@ -5359,6 +6082,156 @@ def _mod_user_service(AuditRepository, ConflictError, NotFoundError, SessionRepo
         counts["sessions_today"] = 0
         counts["updated_at"] = clock.now_iso()
         return counts
+
+    def kick_user(user_id: int, *, operator: dict[str, Any]) -> dict[str, Any]:
+        """强制下线：吊销该用户所有会话，不影响账号状态。"""
+        user = user_repo.find_or_fail(user_id, "用户不存在")
+        if int(user["id"]) == int(operator["id"]):
+            raise ValidationError("不能把自己踢下线")
+        count = session_repo.revoke_all_for_user(user_id)
+        audit_repo.log(
+            user_id=int(operator["id"]),
+            username=operator["username"],
+            action="kick_user",
+            entity="user",
+            entity_id=user_id,
+            detail=f"强制下线 {user['username']}（吊销 {count} 个会话）",
+        )
+        return {"user_id": user_id, "revoked": count}
+
+
+    def cancel_account(user_id: int, *, operator: dict[str, Any]) -> dict[str, Any]:
+        """注销账号：停用并吊销会话，数据保留（可由管理员恢复）。"""
+        user = user_repo.find_or_fail(user_id, "用户不存在")
+        if int(user["id"]) == int(operator["id"]):
+            raise ValidationError("不能注销自己的账号")
+        user_repo.set_status(user_id, "disabled")
+        session_repo.revoke_all_for_user(user_id)
+        audit_repo.log(
+            user_id=int(operator["id"]),
+            username=operator["username"],
+            action="cancel_account",
+            entity="user",
+            entity_id=user_id,
+            detail=f"注销账号 {user['username']}",
+        )
+        return {"user_id": user_id, "status": "disabled"}
+
+    def update_profile(user: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+        """用户自助修改资料。
+
+        姓名修改时会同步登录名（若登录名原本就是旧姓名）；学号/工号需保持唯一；
+        班级变更会自动切换到新的班级群。
+        """
+        user_id = int(user["id"])
+        current = user_repo.find_or_fail(user_id, "用户不存在")
+        updates: dict[str, Any] = {}
+        old_class = current.get("class_name") or ""
+        new_class = old_class
+
+        if "real_name" in payload:
+            real_name = validators.required_str(payload, "real_name", min_len=1, max_len=32)
+            updates["real_name"] = real_name
+            # 登录名与旧姓名一致时同步；否则保持原登录名（避免影响登录习惯）
+            if current.get("username") == current.get("real_name"):
+                candidate = real_name
+                if candidate != current["username"] and not user_repo.by_username(candidate):
+                    updates["username"] = candidate
+        if "number" in payload:
+            number = validators.optional_str(payload, "number", "", max_len=32)
+            if number and number != (current.get("number") or ""):
+                other = user_repo.by_number(number)
+                if other and int(other["id"]) != user_id:
+                    raise ConflictError(f"学号/工号 {number} 已被占用")
+            updates["number"] = number
+        if "department" in payload:
+            updates["department"] = validators.optional_str(payload, "department", "", max_len=64)
+        if "class_name" in payload:
+            new_class = validators.optional_str(payload, "class_name", "", max_len=64)
+            updates["class_name"] = new_class
+        if "email" in payload:
+            updates["email"] = validators.validate_email(
+                validators.optional_str(payload, "email", "", max_len=128)
+            )
+        if "phone" in payload:
+            updates["phone"] = validators.validate_phone(
+                validators.optional_str(payload, "phone", "", max_len=20)
+            )
+
+        if not updates:
+            return auth_service.to_public(current) or {}
+
+        user_repo.update(user_id, updates)
+
+        # 班级变了 → 切换班级群
+        if new_class and new_class != old_class:
+            from backend.services import group_service
+
+            group = group_service.join_group_by_name(
+                {"id": user_id, "role": current["role"], "username": current.get("username", "")},
+                new_class,
+            )
+            # 退出旧班群
+            if old_class:
+                old = connection.query_one(
+                    "SELECT id FROM class_groups WHERE name = ?", (old_class,)
+                )
+                if old and int(old["id"]) != int(group["id"]):
+                    connection.execute(
+                        "DELETE FROM group_members WHERE group_id = ? AND user_id = ?",
+                        (int(old["id"]), user_id),
+                    )
+
+        audit_repo.log(
+            user_id=user_id,
+            username=current.get("username", ""),
+            action="update_profile",
+            entity="user",
+            entity_id=user_id,
+            detail=f"自助修改资料：{', '.join(updates.keys())}",
+        )
+        return auth_service.to_public(user_repo.find(user_id)) or {}
+
+    def forgot_password(payload: dict[str, Any], *, ip: str = "") -> dict[str, Any]:
+        """凭「学号/工号 + 姓名」重置为临时密码。
+
+        这是没有短信/邮件的校园小型部署方案：只核对身份信息，
+        重置后强制下次登录修改密码，并吊销所有旧会话。
+        """
+        import secrets
+
+        from backend.core import security
+
+        number = validators.required_str(payload, "number", min_len=2, max_len=32)
+        real_name = validators.required_str(payload, "real_name", min_len=1, max_len=32)
+
+        user = user_repo.by_number(number)
+        if user is None or (user.get("real_name") or "").strip() != real_name.strip():
+            audit_repo.log(
+                user_id=None, username=number, action="forgot_password_failed",
+                entity="user", entity_id=None, detail=f"身份不匹配（{ip}）", ip=ip,
+            )
+            raise ValidationError("学号与姓名不匹配，请检查后重试")
+
+        alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
+        temp = "".join(secrets.choice(alphabet) for _ in range(8))
+        digest, salt = security.hash_password(temp)
+        user_repo.update(int(user["id"]), {
+            "password_hash": digest,
+            "password_salt": salt,
+            "must_change_password": 1,
+        })
+        session_repo.revoke_all_for_user(int(user["id"]))
+        audit_repo.log(
+            user_id=int(user["id"]), username=user["username"], action="forgot_password",
+            entity="user", entity_id=int(user["id"]), detail=f"自助重置为临时密码（{ip}）", ip=ip,
+        )
+        return {
+            "username": user["username"],
+            "real_name": user.get("real_name"),
+            "temp_password": temp,
+            "hint": "登录后用临时密码修改成自己的密码",
+        }
     return SimpleNamespace(
         user_repo=user_repo,
         session_repo=session_repo,
@@ -5372,6 +6245,10 @@ def _mod_user_service(AuditRepository, ConflictError, NotFoundError, SessionRepo
         import_users=import_users,
         department_options=department_options,
         overview=overview,
+        kick_user=kick_user,
+        cancel_account=cancel_account,
+        update_profile=update_profile,
+        forgot_password=forgot_password,
     )
 
 
@@ -5835,7 +6712,9 @@ def _mod_assignment_service(AssignmentRepository, AuditRepository, ClassReposito
 
     def update_assignment(assignment_id: int, payload: dict[str, Any],
                           operator: dict[str, Any]) -> dict[str, Any]:
-        assignment = assignment_repo.find_or_fail(assignment_id, "作业不存在")
+        assignment = assignment_repo.detail(assignment_id)
+        if assignment is None:
+            raise NotFoundError("作业不存在")
         detail = _class_or_fail(int(assignment["class_id"]))
         permissions.assert_can_manage_course(operator, detail)
 
@@ -5907,7 +6786,9 @@ def _mod_assignment_service(AssignmentRepository, AuditRepository, ClassReposito
                payload: dict[str, Any]) -> dict[str, Any]:
         """学生提交作业。"""
         permissions.require_role(viewer, permissions.ROLE_STUDENT)
-        assignment = assignment_repo.find_or_fail(assignment_id, "作业不存在")
+        assignment = assignment_repo.detail(assignment_id)
+        if assignment is None:
+            raise NotFoundError("作业不存在")
         class_id = int(assignment["class_id"])
         if not enroll_repo.is_enrolled(class_id, int(viewer["id"])):
             raise ForbiddenError("未选修该课程")
@@ -5996,7 +6877,9 @@ def _mod_assignment_service(AssignmentRepository, AuditRepository, ClassReposito
                     rows: list[dict[str, Any]]) -> dict[str, Any]:
         """批量打分：rows = [{submission_id, score, feedback}]。"""
         permissions.require_teacher(operator)
-        assignment = assignment_repo.find_or_fail(assignment_id, "作业不存在")
+        assignment = assignment_repo.detail(assignment_id)
+        if assignment is None:
+            raise NotFoundError("作业不存在")
         detail = _class_or_fail(int(assignment["class_id"]))
         permissions.assert_can_manage_course(operator, detail)
         full_score = float(assignment.get("full_score") or 100)
@@ -6018,7 +6901,9 @@ def _mod_assignment_service(AssignmentRepository, AuditRepository, ClassReposito
 
     def list_submissions(operator: dict[str, Any], assignment_id: int) -> dict[str, Any]:
         permissions.require_teacher(operator)
-        assignment = assignment_repo.find_or_fail(assignment_id, "作业不存在")
+        assignment = assignment_repo.detail(assignment_id)
+        if assignment is None:
+            raise NotFoundError("作业不存在")
         detail = _class_or_fail(int(assignment["class_id"]))
         permissions.assert_can_manage_course(operator, detail)
         submissions = submission_repo.list_by_assignment(assignment_id)
@@ -6034,7 +6919,9 @@ def _mod_assignment_service(AssignmentRepository, AuditRepository, ClassReposito
 
 
     def delete_assignment(operator: dict[str, Any], assignment_id: int) -> None:
-        assignment = assignment_repo.find_or_fail(assignment_id, "作业不存在")
+        assignment = assignment_repo.detail(assignment_id)
+        if assignment is None:
+            raise NotFoundError("作业不存在")
         detail = _class_or_fail(int(assignment["class_id"]))
         permissions.assert_can_manage_course(operator, detail)
         assignment_repo.delete(assignment_id)
@@ -6046,6 +6933,147 @@ def _mod_assignment_service(AssignmentRepository, AuditRepository, ClassReposito
             entity_id=assignment_id,
             detail=assignment["title"],
         )
+
+    def submission_progress(user: dict[str, Any], assignment_id: int) -> dict[str, Any]:
+        """教师视角：谁交了、谁没交。"""
+        from backend.db import connection
+
+        assignment = assignment_repo.detail(assignment_id)
+        if assignment is None:
+            raise NotFoundError("作业不存在")
+        cls = connection.query_one(
+            """SELECT c.*, co.teacher_id FROM classes c
+                 JOIN courses co ON co.id = c.course_id WHERE c.id = ?""",
+            (int(assignment["class_id"]),),
+        )
+        if cls is None:
+            raise NotFoundError("教学班不存在")
+        if user["role"] != permissions.ROLE_ADMIN and int(cls.get("teacher_id") or 0) != int(user["id"]):
+            raise ForbiddenError("只有任课教师可以查看")
+
+        students = connection.query_all(
+            """SELECT u.id, u.real_name, u.username, u.number
+                 FROM enrollments e JOIN users u ON u.id = e.student_id
+                WHERE e.class_id = ? AND e.status = 'active'
+                ORDER BY u.number, u.id""",
+            (int(assignment["class_id"]),),
+        )
+        subs = connection.query_all(
+            """SELECT s.*, u.real_name, u.username, u.number
+                 FROM submissions s JOIN users u ON u.id = s.student_id
+                WHERE s.assignment_id = ?""",
+            (assignment_id,),
+        )
+        by_student = {int(s["student_id"]): s for s in subs}
+
+        submitted, missing = [], []
+        for st in students:
+            sid = int(st["id"])
+            sub = by_student.get(sid)
+            item = {
+                "student_id": sid,
+                "real_name": st["real_name"],
+                "number": st.get("number") or "",
+                "username": st["username"],
+            }
+            if sub is None:
+                missing.append(item)
+            else:
+                item.update(
+                    submission_id=sub["id"],
+                    submitted_at=sub.get("submitted_at"),
+                    status=sub.get("status"),
+                    score=sub.get("score"),
+                    late=bool(sub.get("late")),
+                )
+                submitted.append(item)
+
+        return {
+            "assignment_id": assignment_id,
+            "title": assignment["title"],
+            "deadline": assignment.get("deadline") or "",
+            "class_name": cls["name"],
+            "total": len(students),
+            "submitted_count": len(submitted),
+            "missing_count": len(missing),
+            "graded_count": sum(1 for s in submitted if s.get("status") == "graded"),
+            "submitted": submitted,
+            "missing": missing,
+        }
+
+    def remind_missing(user: dict[str, Any], assignment_id: int) -> dict[str, Any]:
+        """给未交作业的学生群发提醒。"""
+        from backend.services import notification_service
+
+        data = submission_progress(user, assignment_id)
+        missing = data["missing"]
+        if not missing:
+            return {"sent": 0, "message": "全部已提交，无需提醒"}
+
+        link = f"/assignments/{assignment_id}"
+        deadline = data.get("deadline") or ""
+        detail = f"《{data['title']}》还没有提交" + (f"，截止 {deadline}" if deadline else "")
+        from backend.db import connection
+
+        now = clock.now_iso()
+        for m in missing:
+            connection.execute(
+                "INSERT INTO assignment_reminders (assignment_id, student_id, operator_id, created_at)"
+                " VALUES (?, ?, ?, ?)",
+                (assignment_id, int(m["student_id"]), int(user["id"]), now),
+            )
+        sent = notification_service.notify_many(
+            [int(m["student_id"]) for m in missing],
+            title=f"作业催交：{data['title']}",
+            content=f"{detail}，请尽快提交。",
+            category="course",
+            link=link,
+        )
+        audit_repo.log(
+            user_id=int(user["id"]),
+            username=user["username"],
+            action="assignment_remind",
+            entity="assignment",
+            entity_id=assignment_id,
+            detail=f"提醒 {sent} 名学生补交作业",
+        )
+        return {"sent": sent, "students": [m["real_name"] for m in missing]}
+
+    def reminder_history(user: dict[str, Any], assignment_id: int) -> dict[str, Any]:
+        """催交记录：最近几次催交 + 每人被催次数。"""
+        from backend.db import connection
+
+        progress = submission_progress(user, assignment_id)
+        rows = connection.query_all(
+            """SELECT r.created_at, r.student_id, u.real_name AS student_name,
+                      op.real_name AS operator_name
+                 FROM assignment_reminders r
+                 JOIN users u ON u.id = r.student_id
+                 LEFT JOIN users op ON op.id = r.operator_id
+                WHERE r.assignment_id = ?
+                ORDER BY r.created_at DESC""",
+            (assignment_id,),
+        )
+        batches: dict[str, dict[str, Any]] = {}
+        per_student: dict[int, dict[str, Any]] = {}
+        for r in rows:
+            key = r["created_at"]
+            batch = batches.setdefault(
+                key, {"created_at": key, "operator_name": r["operator_name"] or "", "students": []}
+            )
+            batch["students"].append(r["student_name"])
+            item = per_student.setdefault(
+                int(r["student_id"]), {"student_id": int(r["student_id"]), "name": r["student_name"], "times": 0}
+            )
+            item["times"] += 1
+
+        return {
+            "assignment_id": assignment_id,
+            "title": progress["title"],
+            "total_reminded": len(rows),
+            "batches": list(batches.values())[:20],
+            "per_student": sorted(per_student.values(), key=lambda x: -x["times"]),
+        }
     return SimpleNamespace(
         logger=logger,
         assignment_repo=assignment_repo,
@@ -6064,6 +7092,9 @@ def _mod_assignment_service(AssignmentRepository, AuditRepository, ClassReposito
         batch_grade=batch_grade,
         list_submissions=list_submissions,
         delete_assignment=delete_assignment,
+        submission_progress=submission_progress,
+        remind_missing=remind_missing,
+        reminder_history=reminder_history,
     )
 
 
@@ -8405,6 +9436,63 @@ def _mod_statistics_service(AuditRepository, ClassRepository, CourseRepository, 
             "upcoming": upcoming,
             "generated_at": clock.now_iso(),
         }
+
+    def my_todos(viewer: dict[str, Any]) -> dict[str, Any]:
+        """待办中心：聚合当前用户所有待处理事项。"""
+        from backend.repositories.assignments import AssignmentRepository
+        from backend.repositories.attendance import AttendanceSessionRepository
+        from backend.repositories.courses import ClassRepository
+
+        user_id = int(viewer["id"])
+        now = clock.now_iso()
+        if viewer["role"] == permissions.ROLE_STUDENT:
+            pending = AssignmentRepository().list_for_student(user_id, status="pending", limit=50)
+            sessions = AttendanceSessionRepository().list_open_for_student(user_id)
+            quizzes = connection.query_all(
+                """SELECT q.id, q.title, q.end_at, q.duration, c.name AS course_name,
+                          a.id AS attempt_id
+                     FROM quizzes q
+                     JOIN classes cl ON cl.id = q.class_id
+                     JOIN courses c ON c.id = cl.course_id
+                     JOIN enrollments e ON e.class_id = q.class_id AND e.student_id = ?
+                                       AND e.status = 'active'
+                     LEFT JOIN quiz_attempts a ON a.quiz_id = q.id AND a.student_id = ?
+                    WHERE q.status = 'published' AND a.id IS NULL
+                      AND (q.end_at IS NULL OR q.end_at > ?)
+                    ORDER BY COALESCE(q.end_at, '9999') ASC""",
+                (user_id, user_id, now),
+            )
+            total = len(pending) + len(sessions) + len(quizzes)
+            return {
+                "role": "student",
+                "total": total,
+                "pending_assignments": pending,
+                "open_attendance": sessions,
+                "upcoming_quizzes": quizzes,
+            }
+        if viewer["role"] == permissions.ROLE_TEACHER:
+            classes = ClassRepository().of_teacher(user_id)
+            class_ids = [int(c["id"]) for c in classes]
+            ungraded = []
+            if class_ids:
+                marks = ",".join("?" for _ in class_ids)
+                ungraded = connection.query_all(
+                    f"""SELECT s.id, s.submitted_at, a.title, a.class_id, cl.name AS class_name,
+                               u.real_name AS student_name
+                          FROM submissions s
+                          JOIN assignments a ON a.id = s.assignment_id
+                          JOIN classes cl ON cl.id = a.class_id
+                          JOIN users u ON u.id = s.student_id
+                         WHERE a.class_id IN ({marks}) AND s.status <> 'graded'
+                         ORDER BY s.submitted_at ASC LIMIT 20""",
+                    tuple(class_ids),
+                )
+            return {
+                "role": "teacher",
+                "total": len(ungraded),
+                "ungraded": ungraded,
+            }
+        return {"role": "admin", "total": 0}
     return SimpleNamespace(
         user_repo=user_repo,
         course_repo=course_repo,
@@ -8415,6 +9503,186 @@ def _mod_statistics_service(AuditRepository, ClassRepository, CourseRepository, 
         course_overview=course_overview,
         student_report=student_report,
         teacher_dashboard=teacher_dashboard,
+        my_todos=my_todos,
+    )
+
+
+# ======================================================================
+# 模块：backend/services/timetable_service.py
+# ======================================================================
+def _mod_timetable_service(AuditRepository, NotFoundError, clock, connection, permissions, validators):
+    """课表：按班级查看，管理员维护。"""
+
+
+    from typing import Any
+
+
+    audit_repo = AuditRepository()
+
+    PERIODS = {
+        1: "08:00 - 08:45",
+        2: "08:55 - 09:40",
+        3: "10:00 - 10:45",
+        4: "10:55 - 11:40",
+        5: "14:00 - 14:45",
+        6: "14:55 - 15:40",
+        7: "16:00 - 16:45",
+        8: "16:55 - 17:40",
+    }
+
+    WEEKDAYS = {1: "周一", 2: "周二", 3: "周三", 4: "周四", 5: "周五", 6: "周六", 7: "周日"}
+
+
+    def _row(r: dict[str, Any]) -> dict[str, Any]:
+        r["period_label"] = PERIODS.get(int(r["period"]), "")
+        r["weekday_label"] = WEEKDAYS.get(int(r["weekday"]), "")
+        return r
+
+
+    def list_slots(user: dict[str, Any], *, class_name: str = "", teacher_name: str = "",
+                   semester: str = "") -> dict[str, Any]:
+        """学生看自己班；教师看自己的课（也可切到全部）；管理员看全部。"""
+        where, params = [], []
+        scope = "all"
+
+        if user["role"] == permissions.ROLE_STUDENT:
+            cls = (user.get("class_name") or "").strip()
+            if not cls:
+                return {"scope": "none", "class_name": "", "slots": [], "periods": PERIODS, "weekdays": WEEKDAYS}
+            where.append("class_name = ?")
+            params.append(cls)
+            scope = "class"
+        elif user["role"] == permissions.ROLE_TEACHER:
+            # 教师默认看全部课表，可再按班级筛选
+            if class_name:
+                where.append("class_name = ?")
+                params.append(class_name)
+                scope = "class"
+            elif teacher_name:
+                where.append("teacher_name = ?")
+                params.append(teacher_name)
+                scope = "teacher"
+
+        if class_name and user["role"] == permissions.ROLE_ADMIN:
+            where.append("class_name = ?")
+            params.append(class_name)
+            scope = "class"
+
+        semesters = [r["semester"] for r in connection.query_all(
+            "SELECT DISTINCT semester FROM timetable WHERE semester <> '' ORDER BY semester DESC"
+        )]
+        if not semester and semesters:
+            semester = semesters[0]
+        if semester:
+            where.append("semester = ?")
+            params.append(semester)
+
+        sql = "SELECT * FROM timetable"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY weekday, period"
+        rows = [_row(r) for r in connection.query_all(sql, tuple(params))]
+        return {
+            "scope": scope,
+            "class_name": class_name or (user.get("class_name") or ""),
+            "semester": semester,
+            "semesters": semesters,
+            "slots": rows,
+            "periods": PERIODS,
+            "weekdays": WEEKDAYS,
+        }
+
+
+    def classes() -> list[str]:
+        rows = connection.query_all(
+            """SELECT DISTINCT class_name FROM timetable
+                 UNION SELECT DISTINCT name FROM class_groups ORDER BY class_name"""
+        )
+        return [r["class_name"] for r in rows if r.get("class_name")]
+
+
+    def create_slot(user: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+        data = _validate(payload)
+        now = clock.now_iso()
+        try:
+            sid = connection.execute(
+                """INSERT INTO timetable
+                       (class_name, weekday, period, course_name, teacher_name, room, note,
+                        created_at, updated_at, semester, weeks)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (data["class_name"], data["weekday"], data["period"], data["course_name"],
+                 data["teacher_name"], data["room"], data["note"], now, now,
+                 data["semester"], data["weeks"]),
+            )
+        except Exception as exc:  # noqa: BLE001
+            if "UNIQUE" in str(exc):
+                from backend.core.errors import ConflictError
+
+                raise ConflictError("该班级这个时段已经有课了") from None
+            raise
+        audit_repo.log(user_id=int(user["id"]), username=user["username"], action="timetable_create",
+                       entity="timetable", entity_id=sid, detail=f"{data['class_name']} {data['course_name']}")
+        return get_slot(sid)
+
+
+    def update_slot(user: dict[str, Any], slot_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        if connection.query_one("SELECT id FROM timetable WHERE id = ?", (slot_id,)) is None:
+            raise NotFoundError("课表记录不存在")
+        data = _validate(payload)
+        connection.execute(
+            """UPDATE timetable SET class_name=?, weekday=?, period=?, course_name=?,
+                      teacher_name=?, room=?, note=?, updated_at=? WHERE id=?""",
+            (data["class_name"], data["weekday"], data["period"], data["course_name"],
+             data["teacher_name"], data["room"], data["note"], clock.now_iso(),
+             data["semester"], data["weeks"], slot_id),
+        )
+        audit_repo.log(user_id=int(user["id"]), username=user["username"], action="timetable_update",
+                       entity="timetable", entity_id=slot_id, detail=f"{data['class_name']} {data['course_name']}")
+        return get_slot(slot_id)
+
+
+    def delete_slot(user: dict[str, Any], slot_id: int) -> dict[str, Any]:
+        if connection.query_one("SELECT id FROM timetable WHERE id = ?", (slot_id,)) is None:
+            raise NotFoundError("课表记录不存在")
+        connection.execute("DELETE FROM timetable WHERE id = ?", (slot_id,))
+        audit_repo.log(user_id=int(user["id"]), username=user["username"], action="timetable_delete",
+                       entity="timetable", entity_id=slot_id, detail="删除课表记录")
+        return {"id": slot_id}
+
+
+    def get_slot(slot_id: int) -> dict[str, Any]:
+        row = connection.query_one("SELECT * FROM timetable WHERE id = ?", (slot_id,))
+        if row is None:
+            raise NotFoundError("课表记录不存在")
+        return _row(row)
+
+
+    def _validate(payload: dict[str, Any]) -> dict[str, Any]:
+        class_name = validators.required_str(payload, "class_name", min_len=1, max_len=64)
+        course_name = validators.required_str(payload, "course_name", min_len=1, max_len=64)
+        weekday = int(validators.optional_int(payload, "weekday", 1, min_value=1, max_value=7))
+        period = int(validators.optional_int(payload, "period", 1, min_value=1, max_value=8))
+        return {
+            "class_name": class_name,
+            "course_name": course_name,
+            "weekday": weekday,
+            "period": period,
+            "teacher_name": validators.optional_str(payload, "teacher_name", "", max_len=32),
+            "room": validators.optional_str(payload, "room", "", max_len=32),
+            "note": validators.optional_str(payload, "note", "", max_len=200),
+            "semester": validators.optional_str(payload, "semester", "2026-2027-1", max_len=32),
+            "weeks": validators.optional_str(payload, "weeks", "1-20", max_len=64),
+        }
+    return SimpleNamespace(
+        audit_repo=audit_repo,
+        PERIODS=PERIODS,
+        WEEKDAYS=WEEKDAYS,
+        list_slots=list_slots,
+        classes=classes,
+        create_slot=create_slot,
+        update_slot=update_slot,
+        delete_slot=delete_slot,
+        get_slot=get_slot,
     )
 
 
@@ -9830,7 +11098,7 @@ def _mod_seed_lib(AssignmentRepository, AttemptRepository, AttendanceRecordRepos
 # ======================================================================
 # 模块：backend/api/auth_routes.py
 # ======================================================================
-def _mod_auth_api(Response, Router, auth_service, ok, permissions, validators):
+def _mod_auth_api(Response, Router, auth_service, created, ok, permissions, registration_service, user_service, validators):
     """认证相关接口。"""
 
 
@@ -9889,6 +11157,36 @@ def _mod_auth_api(Response, Router, auth_service, ok, permissions, validators):
         from backend.core.security import password_strength
 
         return ok(password_strength(password))
+
+    @router.post("/api/auth/register", auth=False, summary="学生自助注册")
+    def register(req) -> Response:
+        payload = req.json()
+        data = registration_service.register(payload, ip=req.client_ip)
+        return created(data, "注册成功，请登录")
+
+    @router.put("/api/auth/profile", summary="修改我的资料")
+    def update_profile(req) -> Response:
+        user = permissions.require_login(req.user)
+        data = user_service.update_profile(user, req.json())
+        return ok(data, "资料已更新")
+
+    _RESET_LOG: dict[str, list[float]] = {}
+
+
+    @router.post("/api/auth/forgot-password", auth=False, summary="忘记密码（重置为临时密码）")
+    def forgot_password(req) -> Response:
+        import time
+
+        ip = req.client_ip or "unknown"
+        now = time.time()
+        hits = [x for x in _RESET_LOG.get(ip, []) if now - x < 600]
+        if len(hits) >= 5:
+            raise ValidationError("重置过于频繁，请 10 分钟后再试")
+        hits.append(now)
+        _RESET_LOG[ip] = hits
+
+        data = user_service.forgot_password(req.json(), ip=ip)
+        return ok(data, "已重置，请用临时密码登录")
     return SimpleNamespace(
         router=router,
         login=login,
@@ -9897,6 +11195,9 @@ def _mod_auth_api(Response, Router, auth_service, ok, permissions, validators):
         change_password=change_password,
         sessions=sessions,
         strength=strength,
+        register=register,
+        update_profile=update_profile,
+        forgot_password=forgot_password,
     )
 
 
@@ -9988,6 +11289,40 @@ def _mod_user_api(CourseRepository, Response, Router, created, ok, paginated, pe
         default_role = validators.optional_str(payload, "default_role", "student", max_len=16)
         result = user_service.import_users(csv_text, default_role=default_role, operator=admin)
         return ok(result, f"导入完成：成功 {result['created']} 条，失败 {result['failed']} 条")
+
+    @router.post("/api/users/<int:user_id>/kick", roles=("admin",), summary="强制下线")
+    def kick_user(req) -> Response:
+        admin = permissions.require_admin(req.user)
+        return ok(user_service.kick_user(req.path_params["user_id"], operator=admin), "已强制下线")
+
+
+    @router.post("/api/users/<int:user_id>/cancel", roles=("admin",), summary="注销账号")
+    def cancel_account(req) -> Response:
+        admin = permissions.require_admin(req.user)
+        return ok(user_service.cancel_account(req.path_params["user_id"], operator=admin), "账号已注销")
+
+    @router.get("/api/users/export", roles=("admin",), summary="导出用户名单 CSV")
+    def export_users(req) -> Response:
+        import csv
+        import io
+
+        permissions.require_admin(req.user)
+        role = req.str_param("role")
+        items, _total = user_service.list_users(role=role, keyword="", page=1, page_size=200)
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["用户名", "姓名", "角色", "学号/工号", "学院", "行政班", "邮箱", "状态", "最后登录"])
+        for u in items:
+            w.writerow([
+                u.get("username"), u.get("real_name"), u.get("role_label"), u.get("number") or "",
+                u.get("department") or "", u.get("class_name") or "", u.get("email") or "",
+                "启用" if u.get("status") == "active" else "停用", u.get("last_login_at") or "",
+            ])
+        from backend.http.response import Response as R
+
+        return R(status=200, body=buf.getvalue().encode("utf-8-sig"),
+                 content_type="text/csv; charset=utf-8",
+                 headers={"Content-Disposition": "attachment; filename=users.csv"})
     return SimpleNamespace(
         router=router,
         list_users=list_users,
@@ -9998,6 +11333,9 @@ def _mod_user_api(CourseRepository, Response, Router, created, ok, paginated, pe
         set_status=set_status,
         reset_password=reset_password,
         import_users=import_users,
+        kick_user=kick_user,
+        cancel_account=cancel_account,
+        export_users=export_users,
     )
 
 
@@ -10392,6 +11730,50 @@ def _mod_assignment_api(Response, Router, assignment_service, attachment_service
         user = permissions.require_role(req.user, "student")
         attachment_service.delete_file(user, req.path_params["file_id"])
         return ok(None, "已删除")
+
+    @router.get("/api/assignments/<int:assignment_id>/progress",
+                roles=("teacher", "admin"), summary="提交进度与未交名单")
+    def submission_progress(req) -> Response:
+        user = permissions.require_login(req.user)
+        return ok(assignment_service.submission_progress(user, req.path_params["assignment_id"]))
+
+    @router.post("/api/assignments/<int:assignment_id>/remind",
+                 roles=("teacher", "admin"), summary="催交未提交学生")
+    def remind_missing(req) -> Response:
+        user = permissions.require_login(req.user)
+        return ok(assignment_service.remind_missing(user, req.path_params["assignment_id"]))
+
+    @router.get("/api/assignments/<int:assignment_id>/remind-history",
+                roles=("teacher", "admin"), summary="催交记录")
+    def reminder_history(req) -> Response:
+        user = permissions.require_login(req.user)
+        return ok(assignment_service.reminder_history(user, req.path_params["assignment_id"]))
+
+
+    @router.get("/api/assignments/<int:assignment_id>/missing/export",
+                roles=("teacher", "admin"), summary="导出未交名单 CSV")
+    def export_missing(req) -> Response:
+        import csv
+        import io
+
+        user = permissions.require_login(req.user)
+        data = assignment_service.submission_progress(user, req.path_params["assignment_id"])
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["作业", data["title"]])
+        w.writerow(["班级", data["class_name"]])
+        w.writerow(["应交", data["total"], "已交", data["submitted_count"], "未交", data["missing_count"]])
+        w.writerow([])
+        w.writerow(["学号", "姓名", "状态"])
+        for m in data["missing"]:
+            w.writerow([m["number"], m["real_name"], "未交"])
+        if not data["missing"]:
+            w.writerow(["-", "全部已交", ""])
+        from backend.http.response import Response as R
+
+        return R(status=200, body=buf.getvalue().encode("utf-8-sig"),
+                 content_type="text/csv; charset=utf-8",
+                 headers={"Content-Disposition": "attachment; filename=missing_students.csv"})
     return SimpleNamespace(
         router=router,
         list_class_assignments=list_class_assignments,
@@ -10408,6 +11790,10 @@ def _mod_assignment_api(Response, Router, assignment_service, attachment_service
         upload_attachment=upload_attachment,
         download_attachment=download_attachment,
         delete_attachment=delete_attachment,
+        submission_progress=submission_progress,
+        remind_missing=remind_missing,
+        reminder_history=reminder_history,
+        export_missing=export_missing,
     )
 
 
@@ -10673,6 +12059,31 @@ def _mod_grade_api(Response, Router, grade_service, ok, permissions):
                 "Content-Disposition": f"attachment; filename=gradebook_{req.path_params['class_id']}.csv"
             },
         )
+
+    @router.get("/api/my/transcript/export", roles=("student",), summary="导出我的成绩单 CSV")
+    def export_transcript(req) -> Response:
+        import csv
+        import io
+
+        user = permissions.require_role(req.user, "student")
+        data = grade_service.my_transcript(user)
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["课程", "教学班", "学分", "作业", "测验", "出勤", "期末", "总评", "绩点", "是否通过"])
+        for row in data["rows"]:
+            w.writerow([
+                row.get("course_name", ""), row.get("class_name", ""), row.get("credits", ""),
+                row.get("assignment_score"), row.get("quiz_score"), row.get("attendance_score"),
+                "" if row.get("final_score") is None else row["final_score"],
+                row.get("total"), row.get("grade_point"), "是" if row.get("passed") else "否",
+            ])
+        w.writerow([])
+        w.writerow(["总学分", data["total_credits"], "GPA", data["gpa"], "平均分", data["average"]])
+        from backend.http.response import Response as R
+
+        return R(status=200, body=buf.getvalue().encode("utf-8-sig"),
+                 content_type="text/csv; charset=utf-8",
+                 headers={"Content-Disposition": "attachment; filename=my_transcript.csv"})
     return SimpleNamespace(
         router=router,
         get_rule=get_rule,
@@ -10683,6 +12094,7 @@ def _mod_grade_api(Response, Router, grade_service, ok, permissions):
         ranking=ranking,
         transcript=transcript,
         export=export,
+        export_transcript=export_transcript,
     )
 
 
@@ -10947,12 +12359,18 @@ def _mod_report_api(AuditRepository, Response, Router, ok, paginated, permission
         items = repo.list_logs(action=action, keyword=keyword, limit=page_size, offset=offset)
         total = repo.count_logs(action=action, keyword=keyword)
         return paginated(items, total, page, page_size)
+
+    @router.get("/api/my/todos", summary="待办中心")
+    def my_todos(req) -> Response:
+        user = permissions.require_login(req.user)
+        return ok(statistics_service.my_todos(user))
     return SimpleNamespace(
         router=router,
         dashboard=dashboard,
         course_report=course_report,
         student_report=student_report,
         audit_logs=audit_logs,
+        my_todos=my_todos,
     )
 
 
@@ -11151,6 +12569,210 @@ def _mod_system_api(AuditRepository, Response, Router, SettingRepository, backup
 
 
 # ======================================================================
+# 模块：backend/api/group_routes.py
+# ======================================================================
+def _mod_group_api(Response, Router, created, file_response, group_service, multipart, ok, permissions, validators):
+    """班级群与课程推荐接口。"""
+
+
+
+    router = Router()
+
+
+    def _read_payload(req) -> tuple[dict, tuple[str, bytes] | None]:
+        """同时支持 JSON 和 multipart（带一个文件）。"""
+        ctype = req.header("content-type")
+        if multipart.is_multipart(ctype):
+            form = multipart.parse_multipart(req.body, ctype)
+            file = None
+            first = form.first_file()
+            if first is not None:
+                file = (first.filename, first.data)
+            return form.fields, file
+        return req.json(), None
+
+
+    # ---------------------------------------------------------------- 群
+
+
+    @router.get("/api/groups", summary="我的班级群")
+    def list_groups(req) -> Response:
+        user = permissions.require_login(req.user)
+        return ok(group_service.groups_for_user(user))
+
+
+    @router.get("/api/groups/<int:group_id>", summary="班级群详情")
+    def group_detail(req) -> Response:
+        user = permissions.require_login(req.user)
+        limit = req.int_param("limit", 100) or 100
+        return ok(group_service.group_detail(user, req.path_params["group_id"], limit=min(limit, 500)))
+
+
+    @router.post("/api/groups/<int:group_id>/messages", summary="发群消息")
+    def post_message(req) -> Response:
+        user = permissions.require_login(req.user)
+        payload, file = _read_payload(req)
+        data = group_service.post_message(
+            user, req.path_params["group_id"], content=payload.get("content", ""), file=file
+        )
+        return created(data, "已发送")
+
+
+    @router.get("/api/messages/<int:message_id>/file", summary="下载群文件")
+    def message_file(req) -> Response:
+        user = permissions.require_login(req.user)
+        path, name = group_service.message_file(user, req.path_params["message_id"])
+        return file_response(path, download_name=name)
+
+
+    # ---------------------------------------------------------------- 群作业
+
+
+    @router.get("/api/groups/<int:group_id>/assignments", summary="群作业列表")
+    def list_group_assignments(req) -> Response:
+        user = permissions.require_login(req.user)
+        group_service._assert_member(user, req.path_params["group_id"])  # noqa: SLF001
+        return ok(group_service.list_assignments(req.path_params["group_id"], viewer=user))
+
+
+    @router.post("/api/groups/<int:group_id>/assignments", summary="群内发布作业")
+    def create_group_assignment(req) -> Response:
+        user = permissions.require_teacher(req.user)
+        data = group_service.create_assignment(
+            user, req.path_params["group_id"], req.json()
+        )
+        return created(data, "作业已发布")
+
+
+    @router.post("/api/group-assignments/<int:assignment_id>/submit", summary="提交群作业")
+    def submit_group_assignment(req) -> Response:
+        user = permissions.require_login(req.user)
+        payload, file = _read_payload(req)
+        data = group_service.submit(
+            user, req.path_params["assignment_id"], content=payload.get("content", ""), file=file
+        )
+        return ok(data, "提交成功")
+
+
+    @router.get("/api/group-assignments/<int:assignment_id>/submissions",
+                roles=("teacher", "admin"), summary="群作业提交列表")
+    def list_group_submissions(req) -> Response:
+        user = permissions.require_teacher(req.user)
+        return ok(group_service.list_submissions(user, req.path_params["assignment_id"]))
+
+
+    @router.post("/api/group-submissions/<int:submission_id>/grade",
+                 roles=("teacher", "admin"), summary="群作业打分")
+    def grade_group_submission(req) -> Response:
+        user = permissions.require_teacher(req.user)
+        data = group_service.grade_submission(
+            user, req.path_params["submission_id"], req.json()
+        )
+        return ok(data, "已打分")
+
+
+    @router.get("/api/group-submissions/<int:submission_id>/file", summary="下载作业附件")
+    def submission_file(req) -> Response:
+        user = permissions.require_login(req.user)
+        path, name = group_service.submission_file(user, req.path_params["submission_id"])
+        return file_response(path, download_name=name)
+
+
+    # ---------------------------------------------------------------- 课程推荐
+
+
+    @router.get("/api/my/course-offers", roles=("student",), summary="我的课程推荐")
+    def my_offers(req) -> Response:
+        user = permissions.require_role(req.user, "student")
+        return ok(group_service.refresh_offers(user))
+
+
+    @router.post("/api/course-offers/<int:offer_id>/accept", roles=("student",),
+                 summary="接受课程推荐")
+    def accept_offer(req) -> Response:
+        user = permissions.require_role(req.user, "student")
+        return ok(group_service.respond_offer(user, req.path_params["offer_id"], True), "已加入课程")
+
+
+    @router.post("/api/course-offers/<int:offer_id>/reject", roles=("student",),
+                 summary="拒绝课程推荐")
+    def reject_offer(req) -> Response:
+        user = permissions.require_role(req.user, "student")
+        return ok(group_service.respond_offer(user, req.path_params["offer_id"], False), "已拒绝")
+    return SimpleNamespace(
+        router=router,
+        list_groups=list_groups,
+        group_detail=group_detail,
+        post_message=post_message,
+        message_file=message_file,
+        list_group_assignments=list_group_assignments,
+        create_group_assignment=create_group_assignment,
+        submit_group_assignment=submit_group_assignment,
+        list_group_submissions=list_group_submissions,
+        grade_group_submission=grade_group_submission,
+        submission_file=submission_file,
+        my_offers=my_offers,
+        accept_offer=accept_offer,
+        reject_offer=reject_offer,
+    )
+
+
+# ======================================================================
+# 模块：backend/api/timetable_routes.py
+# ======================================================================
+def _mod_timetable_api(Response, Router, created, ok, permissions, timetable_service):
+    """课表接口。"""
+
+
+
+    router = Router()
+
+
+    @router.get("/api/timetable", summary="课表")
+    def list_slots(req) -> Response:
+        user = permissions.require_login(req.user)
+        data = timetable_service.list_slots(
+            user,
+            class_name=req.str_param("class_name"),
+            teacher_name=req.str_param("teacher_name"),
+            semester=req.str_param("semester"),
+        )
+        return ok(data)
+
+
+    @router.get("/api/timetable/classes", summary="有课表的班级")
+    def list_classes(req) -> Response:
+        permissions.require_login(req.user)
+        return ok(timetable_service.classes())
+
+
+    @router.post("/api/timetable", roles=("admin",), summary="新增课程时段")
+    def create_slot(req) -> Response:
+        admin = permissions.require_admin(req.user)
+        return created(timetable_service.create_slot(admin, req.json()), "已添加")
+
+
+    @router.put("/api/timetable/<int:slot_id>", roles=("admin",), summary="修改课程时段")
+    def update_slot(req) -> Response:
+        admin = permissions.require_admin(req.user)
+        return ok(timetable_service.update_slot(admin, req.path_params["slot_id"], req.json()), "已保存")
+
+
+    @router.delete("/api/timetable/<int:slot_id>", roles=("admin",), summary="删除课程时段")
+    def delete_slot(req) -> Response:
+        admin = permissions.require_admin(req.user)
+        return ok(timetable_service.delete_slot(admin, req.path_params["slot_id"]), "已删除")
+    return SimpleNamespace(
+        router=router,
+        list_slots=list_slots,
+        list_classes=list_classes,
+        create_slot=create_slot,
+        update_slot=update_slot,
+        delete_slot=delete_slot,
+    )
+
+
+# ======================================================================
 # 第二部分：按依赖顺序实例化各模块
 # ======================================================================
 
@@ -11181,7 +12803,9 @@ auth_service = _mod_auth_service(config=config, clock=clock, ids=ids, permission
 notification_service = _mod_notification_service(permissions=permissions, NotificationRepository=content_repo.NotificationRepository, UserRepository=users_repo.UserRepository)
 announcement_service = _mod_announcement_service(permissions=permissions, validators=validators, NotFoundError=errors.NotFoundError, AuditRepository=audit_repo.AuditRepository, AnnouncementRepository=content_repo.AnnouncementRepository, ClassRepository=courses_repo.ClassRepository, CourseRepository=courses_repo.CourseRepository, EnrollmentRepository=courses_repo.EnrollmentRepository, notify_many=notification_service.notify_many)
 attachment_service = _mod_attachment_service(config=config, clock=clock, ids=ids, permissions=permissions, validators=validators, ForbiddenError=errors.ForbiddenError, NotFoundError=errors.NotFoundError, TooLargeError=errors.TooLargeError, connection=connection, safe_join=static_lib.safe_join, AuditRepository=audit_repo.AuditRepository, ClassRepository=courses_repo.ClassRepository, EnrollmentRepository=courses_repo.EnrollmentRepository)
-user_service = _mod_user_service(config=config, clock=clock, permissions=permissions, security=security, validators=validators, ConflictError=errors.ConflictError, NotFoundError=errors.NotFoundError, ValidationError=errors.ValidationError, AuditRepository=audit_repo.AuditRepository, SessionRepository=users_repo.SessionRepository, UserRepository=users_repo.UserRepository, auth_service=auth_service)
+group_service = _mod_group_service(config=config, clock=clock, ids=ids, permissions=permissions, validators=validators, ForbiddenError=errors.ForbiddenError, NotFoundError=errors.NotFoundError, ValidationError=errors.ValidationError, connection=connection, safe_join=static_lib.safe_join, AuditRepository=audit_repo.AuditRepository, UserRepository=users_repo.UserRepository)
+registration_service = _mod_registration_service(permissions=permissions, security=security, validators=validators, ConflictError=errors.ConflictError, ValidationError=errors.ValidationError, AuditRepository=audit_repo.AuditRepository, UserRepository=users_repo.UserRepository, group_service=group_service)
+user_service = _mod_user_service(config=config, clock=clock, permissions=permissions, security=security, validators=validators, connection=connection, ConflictError=errors.ConflictError, NotFoundError=errors.NotFoundError, ValidationError=errors.ValidationError, AuditRepository=audit_repo.AuditRepository, SessionRepository=users_repo.SessionRepository, UserRepository=users_repo.UserRepository, auth_service=auth_service)
 course_service = _mod_course_service(config=config, clock=clock, ids=ids, permissions=permissions, validators=validators, ConflictError=errors.ConflictError, ForbiddenError=errors.ForbiddenError, NotFoundError=errors.NotFoundError, ValidationError=errors.ValidationError, AuditRepository=audit_repo.AuditRepository, ClassRepository=courses_repo.ClassRepository, CourseRepository=courses_repo.CourseRepository, EnrollmentRepository=courses_repo.EnrollmentRepository, UserRepository=users_repo.UserRepository)
 assignment_service = _mod_assignment_service(config=config, clock=clock, permissions=permissions, validators=validators, ConflictError=errors.ConflictError, ForbiddenError=errors.ForbiddenError, NotFoundError=errors.NotFoundError, AssignmentRepository=assignments_repo.AssignmentRepository, SubmissionRepository=assignments_repo.SubmissionRepository, AuditRepository=audit_repo.AuditRepository, ClassRepository=courses_repo.ClassRepository, EnrollmentRepository=courses_repo.EnrollmentRepository, UserRepository=users_repo.UserRepository, notify_class=notification_service.notify_class)
 quiz_service = _mod_quiz_service(config=config, clock=clock, permissions=permissions, validators=validators, ConflictError=errors.ConflictError, ForbiddenError=errors.ForbiddenError, NotFoundError=errors.NotFoundError, AuditRepository=audit_repo.AuditRepository, NotificationRepository=content_repo.NotificationRepository, ClassRepository=courses_repo.ClassRepository, EnrollmentRepository=courses_repo.EnrollmentRepository, AttemptRepository=quizzes_repo.AttemptRepository, QuestionRepository=quizzes_repo.QuestionRepository, QuizRepository=quizzes_repo.QuizRepository, notify_class=notification_service.notify_class)
@@ -11191,12 +12815,13 @@ resource_service = _mod_resource_service(config=config, clock=clock, ids=ids, pe
 discussion_service = _mod_discussion_service(permissions=permissions, validators=validators, ForbiddenError=errors.ForbiddenError, NotFoundError=errors.NotFoundError, AuditRepository=audit_repo.AuditRepository, DiscussionRepository=content_repo.DiscussionRepository, ReplyRepository=content_repo.ReplyRepository, ClassRepository=courses_repo.ClassRepository, CourseRepository=courses_repo.CourseRepository, EnrollmentRepository=courses_repo.EnrollmentRepository)
 chapter_service = _mod_chapter_service(clock=clock, permissions=permissions, validators=validators, ForbiddenError=errors.ForbiddenError, NotFoundError=errors.NotFoundError, ValidationError=errors.ValidationError, AssignmentRepository=assignments_repo.AssignmentRepository, AuditRepository=audit_repo.AuditRepository, ChapterRepository=chapters_repo.ChapterRepository, TaskProgressRepository=chapters_repo.TaskProgressRepository, TaskRepository=chapters_repo.TaskRepository, ResourceRepository=content_repo.ResourceRepository, ClassRepository=courses_repo.ClassRepository, CourseRepository=courses_repo.CourseRepository, EnrollmentRepository=courses_repo.EnrollmentRepository, QuizRepository=quizzes_repo.QuizRepository)
 statistics_service = _mod_statistics_service(clock=clock, permissions=permissions, connection=connection, AuditRepository=audit_repo.AuditRepository, ClassRepository=courses_repo.ClassRepository, CourseRepository=courses_repo.CourseRepository, EnrollmentRepository=courses_repo.EnrollmentRepository, UserRepository=users_repo.UserRepository)
+timetable_service = _mod_timetable_service(clock=clock, permissions=permissions, validators=validators, NotFoundError=errors.NotFoundError, connection=connection, AuditRepository=audit_repo.AuditRepository)
 request_lib = _mod_request_lib(MAX_BODY_BYTES=config.MAX_BODY_BYTES, TooLargeError=errors.TooLargeError, ValidationError=errors.ValidationError, safe_int=ids.safe_int)
 router_lib = _mod_router_lib(MethodNotAllowedError=errors.MethodNotAllowedError, NotFoundError=errors.NotFoundError, Request=request_lib.Request, Response=response_lib.Response)
 multipart_lib = _mod_multipart_lib(ValidationError=errors.ValidationError)
 server_lib = _mod_server_lib(config=config, AppError=errors.AppError, TooLargeError=errors.TooLargeError, Request=request_lib.Request, build_request=request_lib.build_request, Response=response_lib.Response, error_response=response_lib.error_response, json_response=response_lib.json_response)
 seed_lib = _mod_seed_lib(config=config, clock=clock, ids=ids, security=security, connection=connection, migrations=migrations, AssignmentRepository=assignments_repo.AssignmentRepository, SubmissionRepository=assignments_repo.SubmissionRepository, AttendanceRecordRepository=attendance_repo.AttendanceRecordRepository, AttendanceSessionRepository=attendance_repo.AttendanceSessionRepository, SettingRepository=audit_repo.SettingRepository, ChapterRepository=chapters_repo.ChapterRepository, TaskProgressRepository=chapters_repo.TaskProgressRepository, TaskRepository=chapters_repo.TaskRepository, DiscussionRepository=content_repo.DiscussionRepository, NotificationRepository=content_repo.NotificationRepository, ReplyRepository=content_repo.ReplyRepository, ResourceRepository=content_repo.ResourceRepository, ClassRepository=courses_repo.ClassRepository, CourseRepository=courses_repo.CourseRepository, EnrollmentRepository=courses_repo.EnrollmentRepository, GradeItemRepository=grades_repo.GradeItemRepository, GradeRuleRepository=grades_repo.GradeRuleRepository, AttemptRepository=quizzes_repo.AttemptRepository, QuestionRepository=quizzes_repo.QuestionRepository, QuizRepository=quizzes_repo.QuizRepository, UserRepository=users_repo.UserRepository)
-auth_api = _mod_auth_api(permissions=permissions, validators=validators, Response=response_lib.Response, ok=response_lib.ok, Router=router_lib.Router, auth_service=auth_service)
+auth_api = _mod_auth_api(permissions=permissions, validators=validators, Response=response_lib.Response, created=response_lib.created, ok=response_lib.ok, Router=router_lib.Router, auth_service=auth_service, registration_service=registration_service, user_service=user_service)
 user_api = _mod_user_api(permissions=permissions, validators=validators, Response=response_lib.Response, created=response_lib.created, ok=response_lib.ok, paginated=response_lib.paginated, Router=router_lib.Router, CourseRepository=courses_repo.CourseRepository, user_service=user_service)
 course_api = _mod_course_api(permissions=permissions, validators=validators, Response=response_lib.Response, created=response_lib.created, ok=response_lib.ok, paginated=response_lib.paginated, Router=router_lib.Router, course_service=course_service)
 chapter_api = _mod_chapter_api(permissions=permissions, Response=response_lib.Response, created=response_lib.created, ok=response_lib.ok, Router=router_lib.Router, chapter_service=chapter_service)
@@ -11207,6 +12832,8 @@ grade_api = _mod_grade_api(permissions=permissions, Response=response_lib.Respon
 content_api = _mod_content_api(permissions=permissions, validators=validators, multipart=multipart_lib, Response=response_lib.Response, created=response_lib.created, file_response=response_lib.file_response, ok=response_lib.ok, paginated=response_lib.paginated, Router=router_lib.Router, announcement_service=announcement_service, discussion_service=discussion_service, notification_service=notification_service, resource_service=resource_service)
 report_api = _mod_report_api(permissions=permissions, validators=validators, Response=response_lib.Response, ok=response_lib.ok, paginated=response_lib.paginated, Router=router_lib.Router, AuditRepository=audit_repo.AuditRepository, statistics_service=statistics_service)
 system_api = _mod_system_api(config=config, clock=clock, errors=errors, permissions=permissions, validators=validators, Response=response_lib.Response, file_response=response_lib.file_response, ok=response_lib.ok, backup_service=backup_service, search_service=search_service, Router=router_lib.Router, AuditRepository=audit_repo.AuditRepository, SettingRepository=audit_repo.SettingRepository, connection=connection)
+group_api = _mod_group_api(permissions=permissions, validators=validators, multipart=multipart_lib, Response=response_lib.Response, created=response_lib.created, file_response=response_lib.file_response, ok=response_lib.ok, Router=router_lib.Router, group_service=group_service)
+timetable_api = _mod_timetable_api(permissions=permissions, Response=response_lib.Response, created=response_lib.created, ok=response_lib.ok, Router=router_lib.Router, timetable_service=timetable_service)
 
 # ======================================================================
 # 应用装配：把各模块的 router 合并，处理认证 / 静态资源 / 错误
