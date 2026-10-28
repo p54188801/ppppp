@@ -396,6 +396,15 @@ def remind_missing(user: dict[str, Any], assignment_id: int) -> dict[str, Any]:
     link = f"/assignments/{assignment_id}"
     deadline = data.get("deadline") or ""
     detail = f"《{data['title']}》还没有提交" + (f"，截止 {deadline}" if deadline else "")
+    from backend.db import connection
+
+    now = clock.now_iso()
+    for m in missing:
+        connection.execute(
+            "INSERT INTO assignment_reminders (assignment_id, student_id, operator_id, created_at)"
+            " VALUES (?, ?, ?, ?)",
+            (assignment_id, int(m["student_id"]), int(user["id"]), now),
+        )
     sent = notification_service.notify_many(
         [int(m["student_id"]) for m in missing],
         title=f"作业催交：{data['title']}",
@@ -412,3 +421,39 @@ def remind_missing(user: dict[str, Any], assignment_id: int) -> dict[str, Any]:
         detail=f"提醒 {sent} 名学生补交作业",
     )
     return {"sent": sent, "students": [m["real_name"] for m in missing]}
+
+def reminder_history(user: dict[str, Any], assignment_id: int) -> dict[str, Any]:
+    """催交记录：最近几次催交 + 每人被催次数。"""
+    from backend.db import connection
+
+    progress = submission_progress(user, assignment_id)
+    rows = connection.query_all(
+        """SELECT r.created_at, r.student_id, u.real_name AS student_name,
+                  op.real_name AS operator_name
+             FROM assignment_reminders r
+             JOIN users u ON u.id = r.student_id
+             LEFT JOIN users op ON op.id = r.operator_id
+            WHERE r.assignment_id = ?
+            ORDER BY r.created_at DESC""",
+        (assignment_id,),
+    )
+    batches: dict[str, dict[str, Any]] = {}
+    per_student: dict[int, dict[str, Any]] = {}
+    for r in rows:
+        key = r["created_at"]
+        batch = batches.setdefault(
+            key, {"created_at": key, "operator_name": r["operator_name"] or "", "students": []}
+        )
+        batch["students"].append(r["student_name"])
+        item = per_student.setdefault(
+            int(r["student_id"]), {"student_id": int(r["student_id"]), "name": r["student_name"], "times": 0}
+        )
+        item["times"] += 1
+
+    return {
+        "assignment_id": assignment_id,
+        "title": progress["title"],
+        "total_reminded": len(rows),
+        "batches": list(batches.values())[:20],
+        "per_student": sorted(per_student.values(), key=lambda x: -x["times"]),
+    }

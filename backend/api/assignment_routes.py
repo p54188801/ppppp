@@ -142,3 +142,35 @@ def submission_progress(req) -> Response:
 def remind_missing(req) -> Response:
     user = permissions.require_login(req.user)
     return ok(assignment_service.remind_missing(user, req.path_params["assignment_id"]))
+
+@router.get("/api/assignments/<int:assignment_id>/remind-history",
+            roles=("teacher", "admin"), summary="催交记录")
+def reminder_history(req) -> Response:
+    user = permissions.require_login(req.user)
+    return ok(assignment_service.reminder_history(user, req.path_params["assignment_id"]))
+
+
+@router.get("/api/assignments/<int:assignment_id>/missing/export",
+            roles=("teacher", "admin"), summary="导出未交名单 CSV")
+def export_missing(req) -> Response:
+    import csv
+    import io
+
+    user = permissions.require_login(req.user)
+    data = assignment_service.submission_progress(user, req.path_params["assignment_id"])
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["作业", data["title"]])
+    w.writerow(["班级", data["class_name"]])
+    w.writerow(["应交", data["total"], "已交", data["submitted_count"], "未交", data["missing_count"]])
+    w.writerow([])
+    w.writerow(["学号", "姓名", "状态"])
+    for m in data["missing"]:
+        w.writerow([m["number"], m["real_name"], "未交"])
+    if not data["missing"]:
+        w.writerow(["-", "全部已交", ""])
+    from backend.http.response import Response as R
+
+    return R(status=200, body=buf.getvalue().encode("utf-8-sig"),
+             content_type="text/csv; charset=utf-8",
+             headers={"Content-Disposition": "attachment; filename=missing_students.csv"})

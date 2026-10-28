@@ -15,7 +15,7 @@ from backend.core import clock
 from backend.db import connection
 
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
-CURRENT_VERSION = 6
+CURRENT_VERSION = 7
 
 
 def _read_schema() -> str:
@@ -244,7 +244,25 @@ def _migrate_v6(conn: sqlite3.Connection) -> None:
         )
 
 
+
+def _migrate_v7(conn: sqlite3.Connection) -> None:
+    """v6 -> v7：催交记录。"""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS assignment_reminders (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            assignment_id INTEGER NOT NULL REFERENCES assignments(id) ON DELETE CASCADE,
+            student_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            operator_id   INTEGER NOT NULL REFERENCES users(id),
+            created_at    TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_reminders ON assignment_reminders(assignment_id, created_at);
+        """
+    )
+
+
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
+
 
     (1, _migrate_v1),
     (2, _migrate_v2),
@@ -252,6 +270,7 @@ MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (4, _migrate_v4),
     (5, _migrate_v5),
     (6, _migrate_v6),
+    (7, _migrate_v7),
 ]
 
 
@@ -320,6 +339,7 @@ def reset_db() -> None:
         "course_offers",
         "class_groups",
         "timetable",
+        "assignment_reminders",
         "assignment_files",
         "task_progress",
         "tasks",

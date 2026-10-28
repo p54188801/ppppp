@@ -107,6 +107,41 @@ function submitLink() {
   return `${window.location.origin}${window.location.pathname}#/assignments/${id}`
 }
 
+
+// ---------------------------------------------------------------------------
+// 未交名单导出 + 催交记录
+// ---------------------------------------------------------------------------
+const history = ref(null)
+const showHistory = ref(false)
+
+async function exportMissing() {
+  try {
+    const token = localStorage.getItem('eduflow_token') || ''
+    const res = await fetch(`/api/assignments/${id}/missing/export`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!res.ok) throw new Error('导出失败')
+    const blob = await res.blob()
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = '未交名单.csv'
+    a.click()
+    URL.revokeObjectURL(a.href)
+  } catch (error) {
+    ui.error(error.message)
+  }
+}
+
+async function toggleHistory() {
+  showHistory.value = !showHistory.value
+  if (!showHistory.value) return
+  try {
+    history.value = await api.get(`/api/assignments/${id}/remind-history`)
+  } catch (error) {
+    ui.error(error.message)
+  }
+}
+
 async function remindMissing() {
   if (!progress.value?.missing_count) return ui.info('全部已交，无需提醒')
   const okConfirm = await ui.confirm({
@@ -340,6 +375,8 @@ onMounted(async () => {
           <button class="btn sm" :disabled="!progress?.missing_count" @click="remindMissing">
             提醒未交（{{ progress?.missing_count || 0 }}）
           </button>
+          <button class="btn sm" @click="exportMissing">导出未交名单</button>
+          <button class="btn sm" @click="toggleHistory">{{ showHistory ? '收起记录' : '催交记录' }}</button>
           <button class="btn sm" @click="copyLink">复制提交链接</button>
           <button class="btn sm" :disabled="!progress" @click="loadProgress">刷新</button>
         </div>
@@ -393,6 +430,28 @@ onMounted(async () => {
             <span v-if="s.score != null" class="badge green">{{ s.score }} 分</span>
             <span v-else class="badge gray">待批改</span>
           </span>
+        </div>
+      </div>
+
+      <div v-if="showHistory && history" class="card" style="margin-top: 12px; box-shadow: none">
+        <div class="card-title">
+          <span>催交记录 · 累计 {{ history.total_reminded }} 次</span>
+        </div>
+        <div v-if="!history.batches.length" class="empty" style="padding: 10px">还没有催交过</div>
+        <div v-for="(b, i) in history.batches" :key="i" style="padding: 8px 0; border-bottom: 1px solid var(--border)">
+          <div class="row between">
+            <span class="small">{{ b.created_at }} · {{ b.operator_name }}</span>
+            <span class="badge gray">{{ b.students.length }} 人</span>
+          </div>
+          <div class="faint small" style="margin-top: 3px">{{ b.students.join('、') }}</div>
+        </div>
+        <div v-if="history.per_student.length" style="margin-top: 10px">
+          <div class="stat-label" style="margin-bottom: 6px">按学生统计</div>
+          <div class="row wrap" style="gap: 8px">
+            <span v-for="s in history.per_student" :key="s.student_id" class="badge yellow">
+              {{ s.name }} × {{ s.times }}
+            </span>
+          </div>
         </div>
       </div>
 
