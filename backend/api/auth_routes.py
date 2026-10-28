@@ -5,7 +5,7 @@ from __future__ import annotations
 from backend.core import permissions, validators
 from backend.http.response import Response, created, ok
 from backend.http.router import Router
-from backend.services import auth_service, registration_service
+from backend.services import auth_service, registration_service, user_service
 
 router = Router()
 
@@ -67,3 +67,9 @@ def register(req) -> Response:
     payload = req.json()
     data = registration_service.register(payload, ip=req.client_ip)
     return created(data, "注册成功，请登录")
+
+@router.put("/api/auth/profile", summary="修改我的资料")
+def update_profile(req) -> Response:
+    user = permissions.require_login(req.user)
+    data = user_service.update_profile(user, req.json())
+    return ok(data, "资料已更新")

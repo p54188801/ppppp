@@ -8,6 +8,7 @@ from typing import Any
 
 from backend import config
 from backend.core import clock, permissions, security, validators
+from backend.db import connection
 from backend.core.errors import ConflictError, NotFoundError, ValidationError
 from backend.repositories.audit import AuditRepository
 from backend.repositories.users import SessionRepository, UserRepository
@@ -270,3 +271,78 @@ def cancel_account(user_id: int, *, operator: dict[str, Any]) -> dict[str, Any]:
         detail=f"注销账号 {user['username']}",
     )
     return {"user_id": user_id, "status": "disabled"}
+
+def update_profile(user: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    """用户自助修改资料。
+
+    姓名修改时会同步登录名（若登录名原本就是旧姓名）；学号/工号需保持唯一；
+    班级变更会自动切换到新的班级群。
+    """
+    user_id = int(user["id"])
+    current = user_repo.find_or_fail(user_id, "用户不存在")
+    updates: dict[str, Any] = {}
+    old_class = current.get("class_name") or ""
+    new_class = old_class
+
+    if "real_name" in payload:
+        real_name = validators.required_str(payload, "real_name", min_len=1, max_len=32)
+        updates["real_name"] = real_name
+        # 登录名与旧姓名一致时同步；否则保持原登录名（避免影响登录习惯）
+        if current.get("username") == current.get("real_name"):
+            candidate = real_name
+            if candidate != current["username"] and not user_repo.by_username(candidate):
+                updates["username"] = candidate
+    if "number" in payload:
+        number = validators.optional_str(payload, "number", "", max_len=32)
+        if number and number != (current.get("number") or ""):
+            other = user_repo.by_number(number)
+            if other and int(other["id"]) != user_id:
+                raise ConflictError(f"学号/工号 {number} 已被占用")
+        updates["number"] = number
+    if "department" in payload:
+        updates["department"] = validators.optional_str(payload, "department", "", max_len=64)
+    if "class_name" in payload:
+        new_class = validators.optional_str(payload, "class_name", "", max_len=64)
+        updates["class_name"] = new_class
+    if "email" in payload:
+        updates["email"] = validators.validate_email(
+            validators.optional_str(payload, "email", "", max_len=128)
+        )
+    if "phone" in payload:
+        updates["phone"] = validators.validate_phone(
+            validators.optional_str(payload, "phone", "", max_len=20)
+        )
+
+    if not updates:
+        return auth_service.to_public(current) or {}
+
+    user_repo.update(user_id, updates)
+
+    # 班级变了 → 切换班级群
+    if new_class and new_class != old_class:
+        from backend.services import group_service
+
+        group = group_service.join_group_by_name(
+            {"id": user_id, "role": current["role"], "username": current.get("username", "")},
+            new_class,
+        )
+        # 退出旧班群
+        if old_class:
+            old = connection.query_one(
+                "SELECT id FROM class_groups WHERE name = ?", (old_class,)
+            )
+            if old and int(old["id"]) != int(group["id"]):
+                connection.execute(
+                    "DELETE FROM group_members WHERE group_id = ? AND user_id = ?",
+                    (int(old["id"]), user_id),
+                )
+
+    audit_repo.log(
+        user_id=user_id,
+        username=current.get("username", ""),
+        action="update_profile",
+        entity="user",
+        entity_id=user_id,
+        detail=f"自助修改资料：{', '.join(updates.keys())}",
+    )
+    return auth_service.to_public(user_repo.find(user_id)) or {}
