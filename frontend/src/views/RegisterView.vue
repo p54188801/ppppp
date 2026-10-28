@@ -123,7 +123,10 @@ function goLogin() {
           <input v-model="confirm" class="input" type="password" placeholder="再输入一次" autocomplete="new-password" />
         </div>
 
-        <div v-if="error" class="badge red" style="margin-bottom: 12px">{{ error }}</div>
+        <div v-if="error" class="badge red" style="display: block; margin-bottom: 12px">{{ error }}</div>
+        <div v-if="error.includes('已存在')" class="hint" style="margin-bottom: 12px">
+          可以 <a href="#" @click.prevent="router.replace({ name: 'login' })">直接登录</a>；忘记密码请联系管理员重置。
+        </div>
 
         <button class="btn primary block" type="submit" :disabled="!canSubmit">
           {{ loading ? '注册中…' : '注 册' }}

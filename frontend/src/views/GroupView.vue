@@ -184,7 +184,13 @@ onMounted(loadGroups)
     <div v-else class="group-layout">
       <aside class="group-list card">
         <div class="card-title">我的班级</div>
-        <div v-if="!groups.length" class="empty">还没有班级群，去注册时填写班级即可</div>
+        <div v-if="!groups.length" class="empty" style="text-align: center; padding: 18px 0">
+          <div style="margin-bottom: 10px">你还没有加入班级群</div>
+          <div class="faint small" style="margin-bottom: 12px">去个人中心填上班级，就会自动进群</div>
+          <button class="btn primary sm" @click="router.push({ name: 'profile' })">
+            去个人中心设置班级
+          </button>
+        </div>
         <div
           v-for="g in groups"
           :key="g.id"

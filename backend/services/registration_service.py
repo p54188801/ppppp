@@ -43,7 +43,7 @@ def register(payload: dict[str, Any], *, ip: str = "") -> dict[str, Any]:
     class_name = validators.required_str(payload, "class_name", min_len=2, max_len=64)
 
     if user_repo.by_number(number):
-        raise ConflictError("该学号/工号已注册")
+        raise ConflictError("该学号/工号已存在账号，无法重复注册，请直接登录")
 
     username = _unique_username(real_name)
     digest, salt = security.hash_password(password)
