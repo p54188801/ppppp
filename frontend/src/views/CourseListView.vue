@@ -160,7 +160,7 @@ onMounted(async () => {
   <div>
     <div class="page-head">
       <div>
-        <h1>{{ auth.isStudent ? '我的课程' : '课程管理' }}</h1>
+        <h1>{{ auth.isStudent ? '全部课程' : '课程管理' }}</h1>
         <p>
           共 {{ total }} 门课程
           <template v-if="auth.isStudent">，点击卡片可查看教学班、资料与讨论</template>
@@ -245,6 +245,9 @@ onMounted(async () => {
             {{ course.student_count }} 名学生
           </span>
           <span v-else-if="course.class_name" class="badge purple">{{ course.class_name }}</span>
+          <span v-if="auth.isStudent" class="badge" :class="course.enrolled ? 'green' : 'gray'">
+            {{ course.enrolled ? '已选课' : '未选课' }}
+          </span>
         </div>
 
         <div class="row between" style="margin-top: 14px">

@@ -11,6 +11,7 @@ from typing import Any
 from backend import config
 from backend.core import clock, ids, permissions, validators
 from backend.core.errors import ConflictError, ForbiddenError, NotFoundError, ValidationError
+from backend.db import connection
 from backend.repositories.audit import AuditRepository
 from backend.repositories.courses import (
     ClassRepository,
@@ -57,15 +58,22 @@ def list_courses(
             teacher_id=int(viewer["id"]), term=term, keyword=keyword
         )
     else:
-        items = course_repo.of_student(int(viewer["id"]))
-        if keyword:
-            lowered = keyword.lower()
-            items = [
-                item for item in items
-                if lowered in (item.get("name") or "").lower()
-                or lowered in (item.get("code") or "").lower()
-            ]
+        # 学生可见全部已开设课程；已选课的标记出来
+        items = course_repo.list_courses(term=term, keyword=keyword)
         total = len(items)
+        enrolled_ids = {
+            int(r["course_id"])
+            for r in connection.query_all(
+                """SELECT DISTINCT cl.course_id FROM enrollments e
+                     JOIN classes cl ON cl.id = e.class_id
+                    WHERE e.student_id = ? AND e.status = 'active'""",
+                (int(viewer["id"]),),
+            )
+        }
+        for item in items:
+            item["enrolled"] = int(item["id"]) in enrolled_ids
+        items = items[offset : offset + page_size]
+        total = len(course_repo.list_courses(term=term, keyword=keyword))
     return items, total
 
 

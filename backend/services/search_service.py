@@ -68,8 +68,6 @@ def global_search(viewer: dict[str, Any], keyword: str) -> dict[str, Any]:
 
     like = f"%{keyword}%"
     scope = _scope_course_ids(viewer)
-    if scope is not None and not scope:
-        return empty
 
     courses = _query(
         """SELECT c.id, c.code, c.name, c.term, u.real_name AS teacher_name
@@ -77,7 +75,7 @@ def global_search(viewer: dict[str, Any], keyword: str) -> dict[str, Any]:
         ["(c.name LIKE ? OR c.code LIKE ?)", "c.status = 'active'"],
         [like, like],
         "c.id",
-        scope,
+        None,
         "c.id DESC",
     )
 
