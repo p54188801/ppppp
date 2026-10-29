@@ -83,6 +83,9 @@ const navItems = computed(() => {
   const items = [{ name: 'dashboard', label: '工作台', icon: '◈', group: '概览' }]
   items.push({ name: 'group', label: '班级群', icon: '👥', group: '学习' })
   items.push({ name: 'timetable', label: '课表', icon: '🗓', group: '学习' })
+  if (auth.isTeacher || auth.isAdmin) {
+    items.push({ name: 'enroll-requests', label: '入课审批', icon: '✅', group: '教学' })
+  }
   if (!role) return items
 
   if (role === 'student') {

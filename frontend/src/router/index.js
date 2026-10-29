@@ -31,6 +31,12 @@ const routes = [
     meta: { title: '工作台' },
   },
   {
+    path: '/enroll-requests',
+    name: 'enroll-requests',
+    component: () => import('@/views/EnrollRequestsView.vue'),
+    meta: { title: '入课审批' },
+  },
+  {
     path: '/timetable',
     name: 'timetable',
     component: () => import('@/views/TimetableView.vue'),

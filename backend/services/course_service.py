@@ -279,16 +279,13 @@ def join_class(student: dict[str, Any], code: str) -> dict[str, Any]:
     current = class_repo.student_count(int(target["id"]))
     if current >= int(target.get("capacity") or 60):
         raise ValidationError("教学班人数已满")
-    enroll_repo.enroll(int(target["id"]), int(student["id"]), source="self")
-    audit_repo.log(
-        user_id=int(student["id"]),
-        username=student["username"],
-        action="join_class",
-        entity="class",
-        entity_id=int(target["id"]),
-        detail=f"凭邀请码 {code} 加入教学班",
-    )
-    return class_repo.detail(int(target["id"])) or {}
+    from backend.services import enroll_service
+
+    try:
+        enroll_service.request_join(student, code)
+    except ConflictError as exc:
+        raise ConflictError(str(exc)) from None
+    return {"class_id": int(target["id"]), "status": "pending"}
 
 
 def add_student(class_id: int, student_id: int, operator: dict[str, Any]) -> dict[str, Any]:

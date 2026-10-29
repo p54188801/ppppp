@@ -23,6 +23,8 @@ const page = ref(1)
 const keyword = ref('')
 const actingId = ref(0)
 const offers = ref([])
+const joinCode = ref('')
+const joining = ref(false)
 
 const showCreate = ref(false)
 const saving = ref(false)
@@ -61,6 +63,21 @@ async function respondOffer(offer, accept) {
     if (accept) await load()
   } catch (error) {
     ui.error(error.message)
+  }
+}
+
+
+async function requestJoin() {
+  if (!joinCode.value.trim()) return ui.error('请输入邀请码')
+  joining.value = true
+  try {
+    const data = await api.post('/api/enroll/request', { code: joinCode.value.trim().toUpperCase() })
+    ui.success(`已申请加入《${data.course_name}》，等待老师审批`)
+    joinCode.value = ''
+  } catch (error) {
+    ui.error(error.message)
+  } finally {
+    joining.value = false
   }
 }
 
@@ -182,7 +199,27 @@ onMounted(async () => {
     </div>
 
 
-    <div v-if="auth.isStudent && offers.length" class="card" style="margin-bottom: 16px">
+    
+    <div v-if="auth.isStudent" class="card" style="margin-bottom: 16px">
+      <div class="card-title">
+        <span>凭邀请码加入课程</span>
+        <span class="faint small">提交后需要任课老师同意</span>
+      </div>
+      <div class="row" style="gap: 10px; margin-top: 6px">
+        <input
+          v-model="joinCode"
+          class="input mono"
+          placeholder="输入老师给的邀请码，例如 SA36Y4"
+          style="max-width: 320px; text-transform: uppercase"
+          @keyup.enter="requestJoin"
+        />
+        <button class="btn primary" :disabled="joining || !joinCode.trim()" @click="requestJoin">
+          {{ joining ? '提交中…' : '申请加入' }}
+        </button>
+      </div>
+    </div>
+
+<div v-if="auth.isStudent && offers.length" class="card" style="margin-bottom: 16px">
       <div class="card-title">
         <span>为你推荐 · {{ offers.length }} 门</span>
         <span class="faint small">按你的班级匹配，可接受或拒绝</span>
