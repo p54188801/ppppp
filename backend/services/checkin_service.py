@@ -55,16 +55,37 @@ def start_checkin(user: dict[str, Any], group_id: int, payload: dict[str, Any]) 
         raise ValidationError("请设置签到内容")
     if mode == "pattern" and answer not in PATTERNS:
         raise ValidationError("请选择一个图案")
-    minutes = int(payload.get("minutes") or 5)
-    minutes = max(1, min(minutes, 60))
+    # 结束方式：手动结束 > 指定结束时间 > 时长；默认 5 分钟
+    now = clock.utcnow()
+    manual = bool(payload.get("manual"))
+    ends_at_raw = str(payload.get("ends_at") or "").strip()
+    if manual:
+        minutes = 0
+        ends = now + timedelta(hours=24)
+    elif ends_at_raw:
+        from datetime import datetime
+
+        try:
+            ends = datetime.fromisoformat(ends_at_raw.replace("Z", "+00:00"))
+        except ValueError:
+            raise ValidationError("结束时间格式不正确") from None
+        if ends.tzinfo is None:
+            ends = ends.replace(tzinfo=now.tzinfo)
+        if ends <= now:
+            raise ValidationError("结束时间必须晚于现在")
+        if (ends - now).total_seconds() > 24 * 3600:
+            raise ValidationError("签到最长 24 小时")
+        minutes = int((ends - now).total_seconds() // 60) or 1
+    else:
+        minutes = int(payload.get("minutes") or 5)
+        minutes = max(1, min(minutes, 24 * 60))
+        ends = now + timedelta(minutes=minutes)
 
     # 关闭该群其它未结束的签到
     connection.execute(
         "UPDATE group_checkins SET status = 'closed' WHERE group_id = ? AND status = 'open'",
         (group_id,),
     )
-    now = clock.utcnow()
-    ends = now + timedelta(minutes=minutes)
     cid = connection.execute(
         """INSERT INTO group_checkins (group_id, teacher_id, mode, answer, minutes, started_at, ends_at, status)
            VALUES (?, ?, ?, ?, ?, ?, ?, 'open')""",
