@@ -15,7 +15,7 @@ from backend.core import clock
 from backend.db import connection
 
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
-CURRENT_VERSION = 8
+CURRENT_VERSION = 9
 
 
 def _read_schema() -> str:
@@ -274,7 +274,37 @@ def _migrate_v8(conn: sqlite3.Connection) -> None:
     )
 
 
+
+def _migrate_v9(conn: sqlite3.Connection) -> None:
+    """v8 -> v9：群签到。"""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS group_checkins (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_id   INTEGER NOT NULL REFERENCES class_groups(id) ON DELETE CASCADE,
+            teacher_id INTEGER NOT NULL REFERENCES users(id),
+            mode       TEXT NOT NULL DEFAULT 'number',
+            answer     TEXT NOT NULL,
+            minutes    INTEGER NOT NULL DEFAULT 5,
+            started_at TEXT NOT NULL,
+            ends_at    TEXT NOT NULL,
+            status     TEXT NOT NULL DEFAULT 'open'
+        );
+        CREATE TABLE IF NOT EXISTS group_checkin_records (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            checkin_id  INTEGER NOT NULL REFERENCES group_checkins(id) ON DELETE CASCADE,
+            student_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            answer      TEXT DEFAULT '',
+            created_at  TEXT NOT NULL,
+            UNIQUE (checkin_id, student_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_checkin_records ON group_checkin_records(checkin_id);
+        """
+    )
+
+
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
+
 
 
 
@@ -286,6 +316,7 @@ MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (6, _migrate_v6),
     (7, _migrate_v7),
     (8, _migrate_v8),
+    (9, _migrate_v9),
 ]
 
 
@@ -355,6 +386,8 @@ def reset_db() -> None:
         "class_groups",
         "timetable",
         "assignment_reminders",
+        "group_checkin_records",
+        "group_checkins",
         "assignment_files",
         "task_progress",
         "tasks",
