@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from backend.core import permissions, validators
+from backend.core.errors import ConflictError, NotFoundError, ValidationError
 from backend.http.response import Response, created, ok, paginated
 from backend.http.router import Router
 from backend.repositories.courses import CourseRepository
@@ -122,3 +123,33 @@ def export_users(req) -> Response:
     return R(status=200, body=buf.getvalue().encode("utf-8-sig"),
              content_type="text/csv; charset=utf-8",
              headers={"Content-Disposition": "attachment; filename=users.csv"})
+
+@router.post("/api/auth/avatar", summary="上传我的头像")
+def upload_avatar(req) -> Response:
+    import base64
+
+    from backend.http import multipart
+
+    user = permissions.require_login(req.user)
+    ctype = req.header("content-type")
+    if not multipart.is_multipart(ctype):
+        raise ValidationError("请用表单上传图片")
+    form = multipart.parse_multipart(req.body, ctype)
+    first = form.first_file()
+    if first is None:
+        raise ValidationError("没有收到文件")
+    if len(first.data) > 1024 * 1024:
+        raise ValidationError("头像不能超过 1 MB")
+    mime = first.content_type or "image/png"
+    if not mime.startswith("image/"):
+        raise ValidationError("只能上传图片")
+    data_url = f"data:{mime};base64," + base64.b64encode(first.data).decode()
+    user_service.set_avatar(int(user["id"]), data_url)
+    return ok({"avatar": data_url}, "头像已更新")
+
+
+@router.delete("/api/auth/avatar", summary="恢复默认头像")
+def clear_avatar(req) -> Response:
+    user = permissions.require_login(req.user)
+    user_service.set_avatar(int(user["id"]), "")
+    return ok({"avatar": ""}, "已恢复默认头像")

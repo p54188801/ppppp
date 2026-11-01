@@ -33,7 +33,7 @@ async function submit() {
   <div class="login-page">
     <form class="login-card" @submit.prevent="submit">
       <div class="login-brand">
-        <div class="brand-mark" style="width: 42px; height: 42px; font-size: 17px">晨</div>
+        <img class="brand-mark-img" style="width: 42px; height: 42px" src="/assets/logo.png" alt="晨光教务" />
         <div>
           <div style="font-size: 18px; font-weight: 650">晨光教务</div>
           <div class="small faint">高校教务与教学管理平台</div>

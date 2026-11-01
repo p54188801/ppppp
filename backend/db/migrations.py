@@ -15,7 +15,7 @@ from backend.core import clock
 from backend.db import connection
 
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
-CURRENT_VERSION = 10
+CURRENT_VERSION = 11
 
 
 def _read_schema() -> str:
@@ -323,7 +323,21 @@ def _migrate_v10(conn: sqlite3.Connection) -> None:
     )
 
 
+
+def _migrate_v11(conn: sqlite3.Connection) -> None:
+    """v10 -> v11：用户头像 + 群消息撤回。"""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(users)")}
+    if "avatar" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN avatar TEXT DEFAULT ''")
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(group_messages)")}
+    if "recalled" not in cols:
+        conn.execute("ALTER TABLE group_messages ADD COLUMN recalled INTEGER NOT NULL DEFAULT 0")
+    if "recalled_at" not in cols:
+        conn.execute("ALTER TABLE group_messages ADD COLUMN recalled_at TEXT")
+
+
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
+
 
 
 
@@ -339,6 +353,7 @@ MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (8, _migrate_v8),
     (9, _migrate_v9),
     (10, _migrate_v10),
+    (11, _migrate_v11),
 ]
 
 

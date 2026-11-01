@@ -131,3 +131,8 @@ def accept_offer(req) -> Response:
 def reject_offer(req) -> Response:
     user = permissions.require_role(req.user, "student")
     return ok(group_service.respond_offer(user, req.path_params["offer_id"], False), "已拒绝")
+
+@router.post("/api/messages/<int:message_id>/recall", summary="撤回消息")
+def recall_message(req) -> Response:
+    user = permissions.require_login(req.user)
+    return ok(group_service.recall_message(user, req.path_params["message_id"]), "已撤回")

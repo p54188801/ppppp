@@ -88,6 +88,43 @@ function onPasswordInput() {
 // 自助修改资料
 // ---------------------------------------------------------------------------
 const myPoints = ref(null)
+const avatarInput = ref(null)
+const uploadingAvatar = ref(false)
+
+async function pickAvatar() {
+  avatarInput.value?.click()
+}
+
+async function uploadAvatar(event) {
+  const file = event.target.files?.[0]
+  if (!file) return
+  if (!file.type.startsWith('image/')) return ui.error('请选择图片文件')
+  const form = new FormData()
+  form.append('file', file)
+  uploadingAvatar.value = true
+  try {
+    const data = await api.upload('/api/auth/avatar', form)
+    me.value = { ...(me.value || {}), avatar: data.avatar }
+    if (auth.user) auth.user = { ...auth.user, avatar: data.avatar }
+    ui.success('头像已更新')
+  } catch (error) {
+    ui.error(error.message)
+  } finally {
+    uploadingAvatar.value = false
+    if (avatarInput.value) avatarInput.value.value = ''
+  }
+}
+
+async function removeAvatar() {
+  try {
+    await api.delete('/api/auth/avatar')
+    me.value = { ...(me.value || {}), avatar: '' }
+    if (auth.user) auth.user = { ...auth.user, avatar: '' }
+    ui.success('已恢复默认头像')
+  } catch (error) {
+    ui.error(error.message)
+  }
+}
 
 const editing = ref(false)
 const saving = ref(false)
@@ -204,6 +241,13 @@ onUnmounted(() => {
         <div class="card" style="margin-top: 0">
           <div class="card-title">
             <span>基本资料</span>
+            <div class="row" style="gap: 8px">
+              <input ref="avatarInput" type="file" accept="image/*" style="display: none" @change="uploadAvatar" />
+              <button class="btn sm" :disabled="uploadingAvatar" @click="pickAvatar">
+                {{ uploadingAvatar ? '上传中…' : '换头像' }}
+              </button>
+              <button v-if="me.avatar" class="btn sm" @click="removeAvatar">恢复默认</button>
+            </div>
             <button v-if="!editing" class="btn sm" @click="startEdit">编辑资料</button>
             <span v-else class="faint small">编辑中…</span>
             <span class="badge" :class="me.role === 'admin' ? 'purple' : me.role === 'teacher' ? 'blue' : 'gray'">
@@ -212,7 +256,14 @@ onUnmounted(() => {
           </div>
 
           <div class="row" style="gap: 14px; margin-bottom: 16px">
-            <div class="brand-mark" style="width: 52px; height: 52px; font-size: 20px">
+            <img
+              v-if="me.avatar"
+              :src="me.avatar"
+              class="brand-mark-img"
+              style="width: 52px; height: 52px"
+              alt="头像"
+            />
+            <div v-else class="brand-mark" style="width: 52px; height: 52px; font-size: 20px">
               {{ (me.real_name || 'U').slice(0, 1) }}
             </div>
             <div>

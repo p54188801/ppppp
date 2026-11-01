@@ -387,3 +387,6 @@ def forgot_password(payload: dict[str, Any], *, ip: str = "") -> dict[str, Any]:
         "temp_password": temp,
         "hint": "登录后用临时密码修改成自己的密码",
     }
+
+def set_avatar(user_id: int, data_url: str) -> None:
+    user_repo.update(user_id, {"avatar": data_url[:800_000]})

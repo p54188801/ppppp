@@ -59,7 +59,7 @@ function goLogin() {
   <div class="login-page">
     <form class="login-card" style="width: min(420px, 92vw)" @submit.prevent="submit">
       <div class="login-brand">
-        <div class="brand-mark" style="width: 42px; height: 42px; font-size: 17px">晨</div>
+        <img class="brand-mark-img" style="width: 42px; height: 42px" src="/assets/logo.png" alt="晨光教务" />
         <div>
           <div style="font-size: 18px; font-weight: 650">注册账号</div>
           <div class="small faint">学生 / 教师均可注册</div>

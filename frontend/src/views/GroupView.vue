@@ -170,6 +170,67 @@ function openAssignmentFromMessage(m) {
 }
 
 
+
+/* ---------------------------- 撤回菜单 ---------------------------- */
+const recallMenu = ref({ show: false, x: 0, y: 0, msg: null })
+let pressTimer = null
+
+function openMenu(event, msg) {
+  if (msg.recalled) return
+  const x = event.clientX ?? event.touches?.[0]?.clientX ?? 0
+  const y = event.clientY ?? event.touches?.[0]?.clientY ?? 0
+  recallMenu.value = { show: true, x, y, msg }
+}
+
+function startPress(event, msg) {
+  cancelPress()
+  const touch = event.touches?.[0]
+  if (!touch) return
+  pressTimer = setTimeout(() => {
+    recallMenu.value = { show: true, x: touch.clientX, y: touch.clientY, msg }
+  }, 550)
+}
+
+function cancelPress() {
+  if (pressTimer) {
+    clearTimeout(pressTimer)
+    pressTimer = null
+  }
+}
+
+function closeMenu() {
+  recallMenu.value.show = false
+}
+
+async function copyMessage() {
+  const msg = recallMenu.value.msg
+  closeMenu()
+  if (!msg?.content) return ui.error('这条消息没有文字可复制')
+  try {
+    await navigator.clipboard.writeText(msg.content)
+    ui.success('已复制')
+  } catch {
+    window.prompt('复制下面的内容：', msg.content)
+  }
+}
+
+async function recallMessage() {
+  const msg = recallMenu.value.msg
+  closeMenu()
+  if (!msg) return
+  try {
+    await api.post(`/api/messages/${msg.id}/recall`)
+    ui.success('已撤回')
+    await loadGroup()
+  } catch (error) {
+    ui.error(error.message)
+  }
+}
+
+function canRecall(m) {
+  return isMine(m) || auth.isAdmin
+}
+
 /* ---------------------------- 签到 ---------------------------- */
 async function startCheckin() {
   const form = checkinForm.value
@@ -506,7 +567,13 @@ onMounted(async () => {
               <button class="btn sm" @click="loadMore">查看更早的消息</button>
             </div>
             <div v-for="m in current.messages" :key="m.id" class="msg-row" :class="{ mine: isMine(m) }">
-              <div class="msg-avatar" :class="roleBadge(m).cls">
+              <img
+                v-if="m.sender_avatar"
+                :src="m.sender_avatar"
+                class="msg-avatar-img"
+                alt=""
+              />
+              <div v-else class="msg-avatar" :class="roleBadge(m).cls">
                 {{ (m.sender_name || '?').slice(0, 1) }}
               </div>
               <div class="msg-main">
@@ -518,9 +585,14 @@ onMounted(async () => {
                 <div
                   class="bubble"
                   :class="{ mine: isMine(m), clickable: m.kind === 'assignment' }"
-                  @click="m.kind === 'assignment' && openAssignmentFromMessage(m)"
+                  @click="m.kind === 'assignment' && !m.recalled && openAssignmentFromMessage(m)"
+                  @contextmenu.prevent="openMenu($event, m)"
+                  @touchstart.passive="startPress($event, m)"
+                  @touchend="cancelPress"
+                  @touchmove="cancelPress"
                 >
-                  <div v-if="m.content && m.kind !== 'assignment'" class="bubble-text">{{ m.content }}</div>
+                  <div v-if="m.recalled" class="bubble-recalled">该消息已撤回</div>
+                  <div v-else-if="m.content && m.kind !== 'assignment'" class="bubble-text">{{ m.content }}</div>
                   <div v-if="m.kind === 'assignment'" class="bubble-assign">
                     <div class="assign-title">📋 {{ m.content }}</div>
                     <div class="assign-hint">点击查看作业 · 提交 · 提交情况</div>
@@ -611,6 +683,14 @@ onMounted(async () => {
       </section>
       <section v-else class="card group-main empty">请选择一个班级群</section>
     </div>
+
+
+      <div v-if="recallMenu.show" class="msg-menu-mask" @click="closeMenu" @contextmenu.prevent="closeMenu">
+        <div class="msg-menu" :style="{ left: recallMenu.x + 'px', top: recallMenu.y + 'px' }" @click.stop>
+          <button class="msg-menu-item" @click="copyMessage">复制</button>
+          <button v-if="canRecall(recallMenu.msg)" class="msg-menu-item danger" @click="recallMessage">撤回</button>
+        </div>
+      </div>
 
     <!-- 发布作业 -->
     <div v-if="showAssign" class="modal-mask" @click.self="showAssign = false">
@@ -1016,4 +1096,21 @@ onMounted(async () => {
 }
 .checkin-card:hover { box-shadow: 0 8px 20px rgba(63,110,180,.12); transform: translateY(-1px); }
 .checkin-card-title { font-weight: 650; color: #1d3557; display: flex; align-items: center; gap: 8px; }
+
+/* 头像图片 / 撤回 */
+.msg-avatar-img { width: 34px; height: 34px; border-radius: 10px; object-fit: cover; flex-shrink: 0; }
+.brand-mark-img { border-radius: 10px; object-fit: cover; flex-shrink: 0; }
+.bubble-recalled { color: #98a8bd; font-style: italic; font-size: 13px; }
+.msg-menu-mask { position: fixed; inset: 0; z-index: 500; }
+.msg-menu {
+  position: fixed; min-width: 120px; background: #fff; border: 1px solid var(--border);
+  border-radius: 12px; box-shadow: 0 12px 30px rgba(30,58,95,.18); overflow: hidden;
+}
+.msg-menu-item {
+  display: block; width: 100%; text-align: left; padding: 10px 16px;
+  background: none; border: none; font-size: 13.5px; color: #22314a; cursor: pointer;
+}
+.msg-menu-item:hover { background: #f4f9ff; }
+.msg-menu-item.danger { color: var(--danger); }
+
 </style>

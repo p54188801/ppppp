@@ -131,7 +131,7 @@ def group_detail(user: dict[str, Any], group_id: int, limit: int = 100) -> dict[
         (group_id,),
     )
     messages = connection.query_all(
-        """SELECT gm.*, u.real_name AS sender_name, u.role AS sender_role
+        """SELECT gm.*, u.real_name AS sender_name, u.role AS sender_role, u.avatar AS sender_avatar
              FROM group_messages gm JOIN users u ON u.id = gm.sender_id
             WHERE gm.group_id = ? ORDER BY gm.id DESC LIMIT ?""",
         (group_id, limit),
@@ -431,3 +431,42 @@ def respond_offer(user: dict[str, Any], offer_id: int, accept: bool) -> dict[str
                 )
             joined = {"class_id": int(target["id"]), "class_name": target["name"]}
     return {"offer_id": offer_id, "status": status, "joined_class": joined}
+
+RECALL_WINDOW_SECONDS = 300
+
+
+def recall_message(user: dict[str, Any], message_id: int) -> dict[str, Any]:
+    """撤回群消息：本人 5 分钟内可撤回；老师/管理员可撤回自己发的消息。"""
+    row = connection.query_one("SELECT * FROM group_messages WHERE id = ?", (message_id,))
+    if row is None:
+        raise NotFoundError("消息不存在")
+    if row.get("recalled"):
+        raise ValidationError("消息已撤回")
+    _assert_member(user, int(row["group_id"]))
+
+    is_owner = int(row["sender_id"]) == int(user["id"])
+    is_admin = user["role"] == permissions.ROLE_ADMIN
+    if not (is_owner or is_admin):
+        raise ForbiddenError("只能撤回自己的消息")
+
+    if is_owner and not is_admin:
+        created = row.get("created_at") or ""
+        try:
+            from datetime import datetime, timezone
+
+            made = datetime.fromisoformat(created.replace("Z", "+00:00"))
+            now = clock.utcnow()
+            if made.tzinfo is None:
+                made = made.replace(tzinfo=timezone.utc)
+            if (now - made).total_seconds() > RECALL_WINDOW_SECONDS:
+                raise ValidationError("超过 5 分钟，不能撤回了")
+        except ValidationError:
+            raise
+        except Exception:  # noqa: BLE001
+            pass
+
+    connection.execute(
+        "UPDATE group_messages SET recalled = 1, recalled_at = ? WHERE id = ?",
+        (clock.now_iso(), message_id),
+    )
+    return {"id": message_id, "recalled": True}
