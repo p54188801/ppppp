@@ -31,6 +31,7 @@ class Application:
 
     def _register_routes(self) -> None:
         from backend.api import (
+            points_routes,
             checkin_routes,
             enroll_routes,
             timetable_routes,
@@ -63,6 +64,7 @@ class Application:
             group_routes,
             enroll_routes,
             checkin_routes,
+            points_routes,
             timetable_routes,
         ):
             self.router.include(module.router)

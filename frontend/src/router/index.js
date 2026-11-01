@@ -37,6 +37,12 @@ const routes = [
     meta: { title: '入课审批' },
   },
   {
+    path: '/points',
+    name: 'points',
+    component: () => import('@/views/PointsView.vue'),
+    meta: { title: '学分德育分' },
+  },
+  {
     path: '/timetable',
     name: 'timetable',
     component: () => import('@/views/TimetableView.vue'),

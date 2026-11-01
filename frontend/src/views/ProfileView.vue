@@ -87,9 +87,20 @@ function onPasswordInput() {
 // ---------------------------------------------------------------------------
 // 自助修改资料
 // ---------------------------------------------------------------------------
+const myPoints = ref(null)
+
 const editing = ref(false)
 const saving = ref(false)
 const profileForm = ref({ real_name: '', number: '', department: '', class_name: '', email: '', phone: '' })
+
+async function loadPoints() {
+  if (!auth.isStudent) return
+  try {
+    myPoints.value = await api.get('/api/my/points')
+  } catch {
+    myPoints.value = null
+  }
+}
 
 function startEdit() {
   const m = me.value || {}
@@ -165,7 +176,10 @@ function deviceText(userAgent) {
   return text.length > 64 ? `${text.slice(0, 64)}…` : text
 }
 
-onMounted(load)
+onMounted(async () => {
+  await load()
+  await loadPoints()
+})
 
 onUnmounted(() => {
   if (strengthTimer) window.clearTimeout(strengthTimer)
@@ -280,7 +294,55 @@ onUnmounted(() => {
             </div>
           </div>
 
-          <div v-if="me.must_change_password" class="hint" style="margin-top: 14px; color: var(--warning)">
+          
+        <div v-if="auth.isStudent && myPoints" class="card" style="margin-top: 14px">
+          <div class="card-title">
+            <span>我的学分与德育分</span>
+            <span class="faint small">由老师和管理员评定</span>
+          </div>
+          <div class="grid cols-2" style="gap: 12px">
+            <div class="stat">
+              <div class="stat-label">学分</div>
+              <div class="stat-value" :style="{ color: myPoints.totals.credit >= 0 ? 'var(--success)' : 'var(--danger)' }">
+                {{ myPoints.totals.credit }}
+              </div>
+              <div class="stat-hint">初始 0 分，老师评定</div>
+            </div>
+            <div class="stat">
+              <div class="stat-label">德育分</div>
+              <div class="stat-value" :style="{ color: myPoints.totals.moral >= 50 ? 'var(--success)' : 'var(--danger)' }">
+                {{ myPoints.totals.moral }}
+              </div>
+              <div class="stat-hint">初始 {{ myPoints.moral_base }} 分，管理员评定</div>
+            </div>
+          </div>
+
+          <div v-if="myPoints.history.length" style="margin-top: 12px">
+            <div class="stat-label" style="margin-bottom: 6px">最近记录</div>
+            <div
+              v-for="h in myPoints.history.slice(0, 8)"
+              :key="h.id"
+              class="row between"
+              style="padding: 7px 0; border-bottom: 1px solid var(--border)"
+            >
+              <span class="small">
+                <span class="badge" :class="h.kind === 'moral' ? 'blue' : 'yellow'">
+                  {{ h.kind === 'moral' ? '德育' : '学分' }}
+                </span>
+                {{ h.reason }}
+              </span>
+              <span class="row" style="gap: 8px">
+                <span class="badge" :class="h.delta > 0 ? 'green' : 'red'">
+                  {{ h.delta > 0 ? '+' : '' }}{{ h.delta }}
+                </span>
+                <span class="faint small">{{ h.operator_name }}</span>
+              </span>
+            </div>
+          </div>
+          <div v-else class="empty" style="padding: 10px">还没有加扣分记录</div>
+        </div>
+
+<div v-if="me.must_change_password" class="hint" style="margin-top: 14px; color: var(--warning)">
             当前仍在使用初始密码，建议立即修改。
           </div>
         </div>
