@@ -38,6 +38,7 @@ const submissions = ref([])
 
 /* 签到 */
 const activeCheckin = ref(null)
+const checkins = ref([])
 const showStartCheckin = ref(false)
 const checkinForm = ref({ mode: 'number', answer: '', pattern: '🍎', minutes: 5, endMode: 'minutes', endsAt: '' })
 const checkinStatus = ref(null)
@@ -80,6 +81,9 @@ async function loadGroup() {
     activeCheckin.value = await api
       .get(`/api/groups/${groupId.value}/checkins/active`)
       .catch(() => null)
+    checkins.value = await api
+      .get(`/api/groups/${groupId.value}/checkins`)
+      .catch(() => [])
   } catch (error) {
     ui.error(error.message)
   }
@@ -436,6 +440,14 @@ onMounted(async () => {
 
         <div class="tabs">
           <div class="tab" :class="{ active: tab === 'chat' }" @click="tab = 'chat'">聊天</div>
+          <div class="tab" :class="{ active: tab === 'assign' }" @click="tab = 'assign'">
+            作业（{{ current.assignments.length }}）
+          </div>
+          <div class="tab" :class="{ active: tab === 'checkin' }" @click="tab = 'checkin'">
+            签到（{{ checkins.length }}）
+          </div>
+        </div>
+
           <!-- 进行中的签到 -->
           <div v-if="activeCheckin" class="checkin-banner">
             <div class="checkin-head">
@@ -485,10 +497,6 @@ onMounted(async () => {
             </div>
           </div>
 
-          <div class="tab" :class="{ active: tab === 'assign' }" @click="tab = 'assign'">
-            作业（{{ current.assignments.length }}）
-          </div>
-        </div>
 
         <!-- 聊天 -->
         <template v-if="tab === 'chat'">
@@ -536,11 +544,10 @@ onMounted(async () => {
         </template>
 
         <!-- 作业列表 -->
-        <template v-else>
+        <template v-else-if="tab === 'assign'">
           <div class="row between" style="margin-bottom: 12px">
             <span class="muted small">共 {{ current.assignments.length }} 份作业</span>
             <div class="row" style="gap: 8px">
-              <button v-if="isTeacher" class="btn sm" @click="showStartCheckin = true">发起签到</button>
               <button v-if="isTeacher" class="btn primary sm" @click="showAssign = true">发布作业</button>
             </div>
           </div>
@@ -567,6 +574,39 @@ onMounted(async () => {
             </div>
           </div>
           <div v-if="!current.assignments.length" class="empty">还没有作业</div>
+        </template>
+
+        <!-- 签到 -->
+        <template v-else>
+          <div class="row between" style="margin-bottom: 12px">
+            <span class="muted small">共 {{ checkins.length }} 次签到</span>
+            <button v-if="isTeacher" class="btn primary sm" @click="showStartCheckin = true">发起签到</button>
+          </div>
+
+          <div v-if="!checkins.length" class="empty" style="padding: 20px">
+            还没有签到记录{{ isTeacher ? '，点右上角「发起签到」开始' : '，等老师发起' }}
+          </div>
+
+          <div v-for="c in checkins" :key="c.id" class="checkin-card">
+            <div class="row between">
+              <div>
+                <div class="checkin-card-title">
+                  {{ c.mode === 'pattern' ? '图案签到 ' + c.answer : '数字签到' }}
+                  <span class="badge" :class="c.status === 'open' ? 'green' : 'gray'">
+                    {{ c.status === 'open' ? '进行中' : '已结束' }}
+                  </span>
+                </div>
+                <div class="faint small">
+                  {{ formatDate(c.started_at, true) }} 开始 · {{ c.minutes ? c.minutes + ' 分钟' : '手动结束' }}
+                </div>
+              </div>
+              <div class="row" style="gap: 8px">
+                <span class="badge blue">{{ c.checked_count }} / {{ current.members.filter(m => m.role === 'student').length }} 已签</span>
+                <button v-if="isTeacher" class="btn sm" @click="viewCheckinStatus(c)">查看谁没签</button>
+                <button v-if="isTeacher && c.status === 'open'" class="btn sm" @click="closeCheckin(c)">结束</button>
+              </div>
+            </div>
+          </div>
         </template>
       </section>
       <section v-else class="card group-main empty">请选择一个班级群</section>
@@ -964,4 +1004,16 @@ onMounted(async () => {
 .pattern-btn:hover { transform: translateY(-2px); border-color: var(--primary); }
 .pattern-btn.active { border-color: var(--primary); background: #fff4e8; }
 
+/* 签到卡片 */
+.checkin-card {
+  border: 1px solid var(--border);
+  border-left: 4px solid #ffc857;
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin-bottom: 10px;
+  background: #fff;
+  transition: box-shadow .15s, transform .15s;
+}
+.checkin-card:hover { box-shadow: 0 8px 20px rgba(63,110,180,.12); transform: translateY(-1px); }
+.checkin-card-title { font-weight: 650; color: #1d3557; display: flex; align-items: center; gap: 8px; }
 </style>
