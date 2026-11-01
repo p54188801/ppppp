@@ -1276,3 +1276,80 @@ tbody tr:hover { background: #f8fbff; }
   flex-shrink: 0;
   display: block;
 }
+/* ============================================================
+   阳光纹样：空白处淡淡的点阵 + 光晕，不抢内容
+   ============================================================ */
+.content {
+  background-image:
+    radial-gradient(rgba(62, 168, 255, 0.07) 1px, transparent 1px),
+    radial-gradient(rgba(255, 176, 64, 0.06) 1px, transparent 1px);
+  background-size: 26px 26px, 26px 26px;
+  background-position: 0 0, 13px 13px;
+}
+
+/* 顶部左侧柔光，像阳光照进来 */
+.content::before {
+  content: '';
+  position: absolute;
+  top: -60px; left: -40px;
+  width: 340px; height: 260px;
+  background: radial-gradient(closest-side, rgba(255, 214, 102, 0.22), transparent 70%);
+  pointer-events: none;
+}
+.content { position: relative; }
+
+/* 页面标题：小竖条 + 细下划线，整洁 */
+.page-head h1 { position: relative; padding-left: 14px; }
+.page-head h1::before {
+  content: '';
+  position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+  width: 5px; height: 22px; border-radius: 3px;
+  background: linear-gradient(180deg, #ffc857, #ff8a3d);
+}
+
+/* 卡片标题：左侧细条 */
+.card-title > span:first-child {
+  position: relative;
+  padding-left: 11px;
+}
+.card-title > span:first-child::before {
+  content: '';
+  position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+  width: 3px; height: 14px; border-radius: 2px;
+  background: linear-gradient(180deg, #3ea8ff, #ffc857);
+}
+
+/* 空状态：淡虚线卡片 + 小太阳 */
+.empty {
+  position: relative;
+  padding: 26px 16px;
+  border: 1px dashed rgba(62, 168, 255, 0.28);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.75), rgba(244, 249, 255, 0.55));
+  color: #93a8c0;
+}
+.empty::before {
+  content: '☀';
+  display: block;
+  font-size: 22px;
+  line-height: 1;
+  margin-bottom: 8px;
+  opacity: 0.55;
+}
+
+/* 表格：表头渐变更柔和 */
+thead th {
+  background: linear-gradient(180deg, #f4faff, #eef6ff);
+}
+
+/* 统计卡：数字更醒目，说明更淡 */
+.stat-value { font-size: 26px; letter-spacing: -0.5px; }
+.stat-hint { font-size: 12px; color: var(--text-faint); }
+
+/* 标签页：更轻的底色 */
+.tabs { border-bottom: 1px solid var(--border); }
+.tab { color: var(--text-dim); }
+.tab:hover { color: #1d3557; }
+
+/* 列表行悬停 */
+.list-row:hover, tbody tr:hover { background: rgba(62, 168, 255, 0.05); }
