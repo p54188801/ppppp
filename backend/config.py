@@ -13,8 +13,8 @@ from pathlib import Path
 # 基本信息
 # ---------------------------------------------------------------------------
 
-APP_NAME = "EduFlow 教务系统"
-APP_SHORT_NAME = "EduFlow"
+APP_NAME = "晨光教务"
+APP_SHORT_NAME = "晨光教务"
 APP_VERSION = "1.0.0"
 APP_DESCRIPTION = "面向高校场景的教学管理桌面应用"
 

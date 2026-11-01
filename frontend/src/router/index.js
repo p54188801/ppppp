@@ -156,7 +156,7 @@ const router = createRouter({
 
 router.beforeEach(async (to) => {
   const auth = useAuthStore()
-  document.title = to.meta.title ? `${to.meta.title} · EduFlow` : 'EduFlow'
+  document.title = to.meta.title ? `${to.meta.title} · 晨光教务` : '晨光教务'
 
   if (to.meta.public) return true
 

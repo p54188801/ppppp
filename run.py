@@ -146,7 +146,7 @@ def main(argv: list[str] | None = None) -> int:
         html=(
             "<html><body style='margin:0;background:#0d1117;color:#8b949e;"
             "font-family:Segoe UI,sans-serif;display:grid;place-items:center;"
-            "height:100vh'><div>正在启动 EduFlow…</div></body></html>"
+            "height:100vh'><div>正在启动 晨光教务…</div></body></html>"
         ),
         width=WINDOW_SIZE[0],
         height=WINDOW_SIZE[1],

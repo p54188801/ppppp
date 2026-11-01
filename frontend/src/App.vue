@@ -123,7 +123,7 @@ const groupedNav = computed(() => {
   return Array.from(groups.entries()).map(([title, items]) => ({ title, items }))
 })
 
-const pageTitle = computed(() => route.meta.title || 'EduFlow')
+const pageTitle = computed(() => route.meta.title || '晨光教务')
 const initials = computed(() => (auth.displayName || 'U').slice(0, 1))
 
 async function refreshUnread() {
@@ -242,10 +242,10 @@ onUnmounted(() => {
     <div v-if="sidebarOpen" class="sidebar-mask" @click="sidebarOpen = false" />
     <aside class="sidebar" :class="{ open: sidebarOpen }">
       <div class="brand">
-        <div class="brand-mark">E</div>
+        <div class="brand-mark">晨</div>
         <div class="brand-text">
-          <strong>EduFlow</strong>
-          <span>教务系统 v1.0</span>
+          <strong>晨光教务</strong>
+          <span>教务与教学管理平台</span>
         </div>
         <button
           type="button"

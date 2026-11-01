@@ -530,8 +530,8 @@ def _mod_config():
     # 基本信息
     # ---------------------------------------------------------------------------
 
-    APP_NAME = "EduFlow 教务系统"
-    APP_SHORT_NAME = "EduFlow"
+    APP_NAME = "晨光教务"
+    APP_SHORT_NAME = "晨光教务"
     APP_VERSION = "1.0.0"
     APP_DESCRIPTION = "面向高校场景的教学管理桌面应用"
 
@@ -2123,7 +2123,7 @@ def _mod_migrations(clock, config, connection):
 
 
     SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
-    CURRENT_VERSION = 8
+    CURRENT_VERSION = 10
 
 
     def _read_schema() -> str:
@@ -2382,7 +2382,58 @@ def _mod_migrations(clock, config, connection):
         )
 
 
+
+    def _migrate_v9(conn: sqlite3.Connection) -> None:
+        """v8 -> v9：群签到。"""
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS group_checkins (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id   INTEGER NOT NULL REFERENCES class_groups(id) ON DELETE CASCADE,
+                teacher_id INTEGER NOT NULL REFERENCES users(id),
+                mode       TEXT NOT NULL DEFAULT 'number',
+                answer     TEXT NOT NULL,
+                minutes    INTEGER NOT NULL DEFAULT 5,
+                started_at TEXT NOT NULL,
+                ends_at    TEXT NOT NULL,
+                status     TEXT NOT NULL DEFAULT 'open'
+            );
+            CREATE TABLE IF NOT EXISTS group_checkin_records (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                checkin_id  INTEGER NOT NULL REFERENCES group_checkins(id) ON DELETE CASCADE,
+                student_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                answer      TEXT DEFAULT '',
+                created_at  TEXT NOT NULL,
+                UNIQUE (checkin_id, student_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_checkin_records ON group_checkin_records(checkin_id);
+            """
+        )
+
+
+
+    def _migrate_v10(conn: sqlite3.Connection) -> None:
+        """v9 -> v10：学生学分与德育分。"""
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS student_points (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                student_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                kind          TEXT NOT NULL,
+                delta         REAL NOT NULL,
+                reason        TEXT NOT NULL,
+                operator_id   INTEGER NOT NULL REFERENCES users(id),
+                operator_role TEXT NOT NULL,
+                created_at    TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_points_student ON student_points(student_id, created_at);
+            """
+        )
+
+
     MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
+
+
 
 
 
@@ -2394,6 +2445,8 @@ def _mod_migrations(clock, config, connection):
         (6, _migrate_v6),
         (7, _migrate_v7),
         (8, _migrate_v8),
+        (9, _migrate_v9),
+        (10, _migrate_v10),
     ]
 
 
@@ -2463,6 +2516,9 @@ def _mod_migrations(clock, config, connection):
             "class_groups",
             "timetable",
             "assignment_reminders",
+            "group_checkin_records",
+            "group_checkins",
+            "student_points",
             "assignment_files",
             "task_progress",
             "tasks",
@@ -4582,8 +4638,6 @@ def _mod_search_service(connection, permissions):
 
         like = f"%{keyword}%"
         scope = _scope_course_ids(viewer)
-        if scope is not None and not scope:
-            return empty
 
         courses = _query(
             """SELECT c.id, c.code, c.name, c.term, u.real_name AS teacher_name
@@ -4591,7 +4645,7 @@ def _mod_search_service(connection, permissions):
             ["(c.name LIKE ? OR c.code LIKE ?)", "c.status = 'active'"],
             [like, like],
             "c.id",
-            scope,
+            None,
             "c.id DESC",
         )
 
@@ -6255,7 +6309,7 @@ def _mod_user_service(AuditRepository, ConflictError, NotFoundError, SessionRepo
 # ======================================================================
 # 模块：backend/services/course_service.py
 # ======================================================================
-def _mod_course_service(AuditRepository, ClassRepository, ConflictError, CourseRepository, EnrollmentRepository, ForbiddenError, NotFoundError, UserRepository, ValidationError, clock, config, ids, permissions, validators):
+def _mod_course_service(AuditRepository, ClassRepository, ConflictError, CourseRepository, EnrollmentRepository, ForbiddenError, NotFoundError, UserRepository, ValidationError, clock, config, connection, ids, permissions, validators):
     """课程与教学班服务。
 
     包含课程 CRUD、开课、教学班管理、选课/退课，以及所有权限校验。
@@ -6304,15 +6358,22 @@ def _mod_course_service(AuditRepository, ClassRepository, ConflictError, CourseR
                 teacher_id=int(viewer["id"]), term=term, keyword=keyword
             )
         else:
-            items = course_repo.of_student(int(viewer["id"]))
-            if keyword:
-                lowered = keyword.lower()
-                items = [
-                    item for item in items
-                    if lowered in (item.get("name") or "").lower()
-                    or lowered in (item.get("code") or "").lower()
-                ]
+            # 学生可见全部已开设课程；已选课的标记出来
+            items = course_repo.list_courses(term=term, keyword=keyword)
             total = len(items)
+            enrolled_ids = {
+                int(r["course_id"])
+                for r in connection.query_all(
+                    """SELECT DISTINCT cl.course_id FROM enrollments e
+                         JOIN classes cl ON cl.id = e.class_id
+                        WHERE e.student_id = ? AND e.status = 'active'""",
+                    (int(viewer["id"]),),
+                )
+            }
+            for item in items:
+                item["enrolled"] = int(item["id"]) in enrolled_ids
+            items = items[offset : offset + page_size]
+            total = len(course_repo.list_courses(term=term, keyword=keyword))
         return items, total
 
 
@@ -6518,16 +6579,13 @@ def _mod_course_service(AuditRepository, ClassRepository, ConflictError, CourseR
         current = class_repo.student_count(int(target["id"]))
         if current >= int(target.get("capacity") or 60):
             raise ValidationError("教学班人数已满")
-        enroll_repo.enroll(int(target["id"]), int(student["id"]), source="self")
-        audit_repo.log(
-            user_id=int(student["id"]),
-            username=student["username"],
-            action="join_class",
-            entity="class",
-            entity_id=int(target["id"]),
-            detail=f"凭邀请码 {code} 加入教学班",
-        )
-        return class_repo.detail(int(target["id"])) or {}
+        from backend.services import enroll_service
+
+        try:
+            enroll_service.request_join(student, code)
+        except ConflictError as exc:
+            raise ConflictError(str(exc)) from None
+        return {"class_id": int(target["id"]), "status": "pending"}
 
 
     def add_student(class_id: int, student_id: int, operator: dict[str, Any]) -> dict[str, Any]:
@@ -9493,6 +9551,121 @@ def _mod_statistics_service(AuditRepository, ClassRepository, CourseRepository, 
                 "ungraded": ungraded,
             }
         return {"role": "admin", "total": 0}
+
+    # ---------------------------------------------------------------------------
+    # 班级群数据（首页用）
+    # ---------------------------------------------------------------------------
+
+
+    def _my_group_ids(user: dict[str, Any]) -> list[int]:
+        role = user["role"]
+        uid = int(user["id"])
+        if role == permissions.ROLE_ADMIN:
+            rows = connection.query_all("SELECT id FROM class_groups")
+        else:
+            rows = connection.query_all(
+                """SELECT g.id FROM class_groups g
+                     LEFT JOIN group_members m ON m.group_id = g.id AND m.user_id = ?
+                    WHERE g.teacher_id = ? OR m.id IS NOT NULL""",
+                (uid, uid),
+            )
+        return [int(r["id"]) for r in rows]
+
+
+    def group_overlay(user: dict[str, Any]) -> dict[str, Any]:
+        """把班级群的人数/作业/提交情况算出来，供首页展示。"""
+        gids = _my_group_ids(user)
+        if not gids:
+            return {"groups": 0, "students": 0, "ungraded": 0, "upcoming": [], "pending": [], "submitted": 0}
+        marks = ",".join("?" for _ in gids)
+        now = clock.now_iso()
+
+        students = connection.query_all(
+            f"""SELECT DISTINCT user_id FROM group_members
+                 WHERE group_id IN ({marks}) AND role = 'student'""",
+            tuple(gids),
+        )
+        student_ids = [int(r["user_id"]) for r in students]
+
+        ungraded = int(
+            connection.scalar(
+                f"""SELECT COUNT(*) FROM group_submissions s
+                      JOIN group_assignments a ON a.id = s.assignment_id
+                     WHERE a.group_id IN ({marks}) AND s.score IS NULL""",
+                tuple(gids),
+                default=0,
+            )
+            or 0
+        )
+        submitted = int(
+            connection.scalar(
+                f"""SELECT COUNT(*) FROM group_submissions s
+                      JOIN group_assignments a ON a.id = s.assignment_id
+                     WHERE a.group_id IN ({marks})""",
+                tuple(gids),
+                default=0,
+            )
+            or 0
+        )
+        upcoming = connection.query_all(
+            f"""SELECT a.id, a.title, a.deadline, a.full_score, g.name AS class_name,
+                       a.group_id, 'group' AS source
+                  FROM group_assignments a
+                  JOIN class_groups g ON g.id = a.group_id
+                 WHERE a.group_id IN ({marks}) AND (a.deadline IS NULL OR a.deadline > ?)
+                 ORDER BY a.deadline ASC LIMIT 8""",
+            tuple(gids) + (now,),
+        )
+
+        pending: list[dict[str, Any]] = []
+        if user["role"] == permissions.ROLE_STUDENT:
+            pending = connection.query_all(
+                f"""SELECT a.id, a.title, a.deadline, a.full_score, g.name AS class_name,
+                           a.group_id, 'group' AS source
+                      FROM group_assignments a
+                      JOIN class_groups g ON g.id = a.group_id
+                     WHERE a.group_id IN ({marks})
+                       AND NOT EXISTS (SELECT 1 FROM group_submissions s
+                                        WHERE s.assignment_id = a.id AND s.student_id = ?)
+                     ORDER BY a.deadline IS NULL, a.deadline ASC""",
+                tuple(gids) + (int(user["id"]),),
+            )
+
+        return {
+            "groups": len(gids),
+            "students": len(student_ids),
+            "ungraded": ungraded,
+            "submitted": submitted,
+            "upcoming": upcoming,
+            "pending": pending,
+        }
+
+
+    def merge_group_overlay(user: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
+        """把群数据合并进首页返回结构。"""
+        overlay = group_overlay(user)
+        data["group"] = overlay
+
+        upcoming = list(data.get("upcoming") or [])
+        upcoming.extend(overlay["upcoming"])
+        upcoming.sort(key=lambda x: x.get("deadline") or "9999")
+        data["upcoming"] = upcoming[:8]
+
+        totals = data.get("totals")
+        if isinstance(totals, dict):
+            totals["group_students"] = overlay["students"]
+            totals["students"] = max(int(totals.get("students") or 0), overlay["students"])
+            totals["ungraded"] = int(totals.get("ungraded") or 0) + overlay["ungraded"]
+            totals["pending"] = int(totals.get("pending") or 0) + len(overlay["pending"])
+
+        pending_raw = data.get("pending_assignments")
+        data["pending_count"] = (pending_raw if isinstance(pending_raw, int) else len(list(pending_raw or []))) + len(overlay["pending"])
+        data["pending_list"] = overlay["pending"]
+        pending = [] if isinstance(pending_raw, int) else list(pending_raw or [])
+        pending.extend(overlay["pending"])
+        pending.sort(key=lambda x: x.get("deadline") or "9999")
+        data["pending_assignments"] = pending
+        return data
     return SimpleNamespace(
         user_repo=user_repo,
         course_repo=course_repo,
@@ -9504,6 +9677,8 @@ def _mod_statistics_service(AuditRepository, ClassRepository, CourseRepository, 
         student_report=student_report,
         teacher_dashboard=teacher_dashboard,
         my_todos=my_todos,
+        group_overlay=group_overlay,
+        merge_group_overlay=merge_group_overlay,
     )
 
 
@@ -12329,10 +12504,10 @@ def _mod_report_api(AuditRepository, Response, Router, ok, paginated, permission
     def dashboard(req) -> Response:
         user = permissions.require_login(req.user)
         if user["role"] == permissions.ROLE_ADMIN:
-            return ok(statistics_service.admin_dashboard())
+            return ok(statistics_service.merge_group_overlay(user, statistics_service.admin_dashboard()))
         if user["role"] == permissions.ROLE_TEACHER:
-            return ok(statistics_service.teacher_dashboard(user))
-        return ok(statistics_service.student_report(user))
+            return ok(statistics_service.merge_group_overlay(user, statistics_service.teacher_dashboard(user)))
+        return ok(statistics_service.merge_group_overlay(user, statistics_service.student_report(user)))
 
 
     @router.get("/api/reports/course/<int:course_id>", roles=("teacher", "admin"),
@@ -12345,7 +12520,7 @@ def _mod_report_api(AuditRepository, Response, Router, ok, paginated, permission
     @router.get("/api/reports/student", roles=("student",), summary="学习报告")
     def student_report(req) -> Response:
         user = permissions.require_role(req.user, "student")
-        return ok(statistics_service.student_report(user))
+        return ok(statistics_service.merge_group_overlay(user, statistics_service.student_report(user)))
 
 
     @router.get("/api/audit-logs", roles=("admin",), summary="审计日志")
@@ -12806,7 +12981,7 @@ attachment_service = _mod_attachment_service(config=config, clock=clock, ids=ids
 group_service = _mod_group_service(config=config, clock=clock, ids=ids, permissions=permissions, validators=validators, ForbiddenError=errors.ForbiddenError, NotFoundError=errors.NotFoundError, ValidationError=errors.ValidationError, connection=connection, safe_join=static_lib.safe_join, AuditRepository=audit_repo.AuditRepository, UserRepository=users_repo.UserRepository)
 registration_service = _mod_registration_service(permissions=permissions, security=security, validators=validators, ConflictError=errors.ConflictError, ValidationError=errors.ValidationError, AuditRepository=audit_repo.AuditRepository, UserRepository=users_repo.UserRepository, group_service=group_service)
 user_service = _mod_user_service(config=config, clock=clock, permissions=permissions, security=security, validators=validators, connection=connection, ConflictError=errors.ConflictError, NotFoundError=errors.NotFoundError, ValidationError=errors.ValidationError, AuditRepository=audit_repo.AuditRepository, SessionRepository=users_repo.SessionRepository, UserRepository=users_repo.UserRepository, auth_service=auth_service)
-course_service = _mod_course_service(config=config, clock=clock, ids=ids, permissions=permissions, validators=validators, ConflictError=errors.ConflictError, ForbiddenError=errors.ForbiddenError, NotFoundError=errors.NotFoundError, ValidationError=errors.ValidationError, AuditRepository=audit_repo.AuditRepository, ClassRepository=courses_repo.ClassRepository, CourseRepository=courses_repo.CourseRepository, EnrollmentRepository=courses_repo.EnrollmentRepository, UserRepository=users_repo.UserRepository)
+course_service = _mod_course_service(config=config, clock=clock, ids=ids, permissions=permissions, validators=validators, ConflictError=errors.ConflictError, ForbiddenError=errors.ForbiddenError, NotFoundError=errors.NotFoundError, ValidationError=errors.ValidationError, connection=connection, AuditRepository=audit_repo.AuditRepository, ClassRepository=courses_repo.ClassRepository, CourseRepository=courses_repo.CourseRepository, EnrollmentRepository=courses_repo.EnrollmentRepository, UserRepository=users_repo.UserRepository)
 assignment_service = _mod_assignment_service(config=config, clock=clock, permissions=permissions, validators=validators, ConflictError=errors.ConflictError, ForbiddenError=errors.ForbiddenError, NotFoundError=errors.NotFoundError, AssignmentRepository=assignments_repo.AssignmentRepository, SubmissionRepository=assignments_repo.SubmissionRepository, AuditRepository=audit_repo.AuditRepository, ClassRepository=courses_repo.ClassRepository, EnrollmentRepository=courses_repo.EnrollmentRepository, UserRepository=users_repo.UserRepository, notify_class=notification_service.notify_class)
 quiz_service = _mod_quiz_service(config=config, clock=clock, permissions=permissions, validators=validators, ConflictError=errors.ConflictError, ForbiddenError=errors.ForbiddenError, NotFoundError=errors.NotFoundError, AuditRepository=audit_repo.AuditRepository, NotificationRepository=content_repo.NotificationRepository, ClassRepository=courses_repo.ClassRepository, EnrollmentRepository=courses_repo.EnrollmentRepository, AttemptRepository=quizzes_repo.AttemptRepository, QuestionRepository=quizzes_repo.QuestionRepository, QuizRepository=quizzes_repo.QuizRepository, notify_class=notification_service.notify_class)
 attendance_service = _mod_attendance_service(config=config, clock=clock, ids=ids, permissions=permissions, validators=validators, ConflictError=errors.ConflictError, ForbiddenError=errors.ForbiddenError, NotFoundError=errors.NotFoundError, AttendanceRecordRepository=attendance_repo.AttendanceRecordRepository, AttendanceSessionRepository=attendance_repo.AttendanceSessionRepository, AuditRepository=audit_repo.AuditRepository, ClassRepository=courses_repo.ClassRepository, EnrollmentRepository=courses_repo.EnrollmentRepository, notify_class=notification_service.notify_class)

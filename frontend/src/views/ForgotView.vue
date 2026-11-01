@@ -40,7 +40,7 @@ async function submit() {
   <div class="login-page">
     <form class="login-card" style="width: min(420px, 92vw)" @submit.prevent="submit">
       <div class="login-brand">
-        <div class="brand-mark" style="width: 42px; height: 42px; font-size: 17px">E</div>
+        <div class="brand-mark" style="width: 42px; height: 42px; font-size: 17px">晨</div>
         <div>
           <div style="font-size: 18px; font-weight: 650">忘记密码</div>
           <div class="small faint">用学号和姓名核对身份</div>
