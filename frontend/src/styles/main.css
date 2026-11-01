@@ -1267,3 +1267,12 @@ tbody tr:hover { background: #f8fbff; }
 
 .modal-head h3 { font-size: 17px; }
 .form-actions { margin-top: 16px; }
+/* 品牌/头像图片：默认尺寸，避免未设宽高时撑满容器 */
+.brand-mark-img {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  object-fit: cover;
+  flex-shrink: 0;
+  display: block;
+}

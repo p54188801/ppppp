@@ -242,7 +242,7 @@ onUnmounted(() => {
     <div v-if="sidebarOpen" class="sidebar-mask" @click="sidebarOpen = false" />
     <aside class="sidebar" :class="{ open: sidebarOpen }">
       <div class="brand">
-        <img class="brand-mark-img" src="/assets/logo.png" alt="晨光教务" />
+        <img class="brand-mark-img" style="width: 34px; height: 34px" src="/assets/logo.png" alt="晨光教务" />
         <div class="brand-text">
           <strong>晨光教务</strong>
           <span>教务与教学管理平台</span>
